@@ -38,6 +38,7 @@ export function useScrapeDeals() {
     mutationFn: (request: GeographicSearchRequest) => dealsApi.scrape(request),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['deals'] })
+      queryClient.invalidateQueries({ queryKey: ['deals', 'map'] })
       toast({
         title: 'Scraping completed',
         description: data.message,

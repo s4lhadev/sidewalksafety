@@ -6,9 +6,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { SatelliteImageViewer } from '@/components/features/deals/satellite-image-viewer'
 import { getStatusColor, getDamageSeverityColor, formatCurrency, formatNumber } from '@/lib/utils'
-import { MapPin, Building2, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react'
-import { useParams } from 'next/navigation'
+import { MapPin, Building2, DollarSign, TrendingUp, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 export default function DealDetailPage() {
   const params = useParams()
@@ -33,12 +35,19 @@ export default function DealDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold">{deal.business_name}</h2>
-        <p className="text-sm text-muted-foreground mt-1">{deal.address}</p>
+      <div className="flex items-center gap-4">
+        <Link href="/dashboard">
+          <Button variant="ghost" size="icon" className="h-8 w-8">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h2 className="text-2xl font-semibold">{deal.business_name}</h2>
+          <p className="text-sm text-muted-foreground mt-1">{deal.address}</p>
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Deal Information</CardTitle>
@@ -153,6 +162,14 @@ export default function DealDetailPage() {
           </Card>
         )}
       </div>
+
+      {evaluation && (
+        <SatelliteImageViewer
+          imageUrl={evaluation.satellite_image_url}
+          parkingLotMask={evaluation.parking_lot_mask}
+          crackDetections={evaluation.crack_detections}
+        />
+      )}
     </div>
   )
 }
