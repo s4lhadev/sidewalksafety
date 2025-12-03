@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, Text, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -12,27 +12,38 @@ class Deal(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    business_name = Column(String, nullable=False, index=True)
-    address = Column(String, nullable=False)
-    city = Column(String, nullable=True, index=True)
-    state = Column(String, nullable=True, index=True)
-    zip = Column(String, nullable=True, index=True)
-    county = Column(String, nullable=True, index=True)
-    phone = Column(String, nullable=True)
-    email = Column(String, nullable=True)
-    website = Column(String, nullable=True)
-    category = Column(String, nullable=True)
-    latitude = Column(Numeric(10, 7), nullable=True)
-    longitude = Column(Numeric(10, 7), nullable=True)
-    places_id = Column(String, nullable=True)
-    apollo_id = Column(String, nullable=True)
+    parking_lot_id = Column(UUID(as_uuid=True), ForeignKey("parking_lots.id", ondelete="CASCADE"), nullable=False, index=True)
+    business_id = Column(UUID(as_uuid=True), ForeignKey("businesses.id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    # Status tracking
     status = Column(String, default="pending", nullable=False, index=True)
-    has_property_verified = Column(Boolean, default=False, nullable=False, index=True)
-    property_verification_method = Column(String, nullable=True)
-    property_type = Column(String, default="parking_lot", nullable=False)
+    # pending -> contacted -> quoted -> negotiating -> won/lost
+    
+    # Financials
+    estimated_job_value = Column(Numeric(12, 2), nullable=True)
+    quoted_amount = Column(Numeric(12, 2), nullable=True)
+    final_amount = Column(Numeric(12, 2), nullable=True)
+    
+    # Priority scoring
+    priority_score = Column(Numeric(5, 2), nullable=True)  # 0-100
+    
+    # Notes and tracking
+    notes = Column(Text, nullable=True)
+    contacted_at = Column(DateTime(timezone=True), nullable=True)
+    quoted_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    # Relationships
     user = relationship("User", back_populates="deals")
-    evaluation = relationship("Evaluation", back_populates="deal", uselist=False)
+    parking_lot = relationship("ParkingLot", back_populates="deals")
+    business = relationship("Business", back_populates="deals")
 
+    # Indexes
+    __table_args__ = (
+        Index('idx_deals_status', status),
+        Index('idx_deals_priority', priority_score),
+    )

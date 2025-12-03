@@ -5,11 +5,19 @@ import { QueryProvider } from '@/lib/providers/query-provider'
 import { AuthProvider } from '@/lib/providers/auth-provider'
 import { Toaster } from '@/components/ui/toaster'
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-sans' })
+const inter = Inter({ 
+  subsets: ['latin'], 
+  weight: ['300', '400', '500', '600', '700'],
+  variable: '--font-sans',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
-  title: 'Sidewalk Safety - Parking Lot Deal Evaluation',
-  description: 'Evaluate parking lot deals for sidewalk repair opportunities',
+  title: 'Sidewalk Safety - AI-Powered Parking Lot Lead Discovery',
+  description: 'Discover high-value parking lot repair leads with AI-powered satellite imagery analysis and business contact enrichment.',
+  icons: {
+    icon: '/favicon.ico',
+  },
 }
 
 export default function RootLayout({
@@ -18,8 +26,8 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={inter.variable}>
+    <html lang="en" suppressHydrationWarning className={inter.variable}>
+      <body className="font-sans antialiased">
         <QueryProvider>
           <AuthProvider>
             {children}
@@ -30,4 +38,3 @@ export default function RootLayout({
     </html>
   )
 }
-

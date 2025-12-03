@@ -1,113 +1,143 @@
 import logging
 import httpx
 from typing import Optional, Dict, Any
-from decimal import Decimal
+from shapely.geometry import Polygon, box
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class GeocodingService:
+    """Service to convert ZIP codes and counties to GeoJSON polygons."""
+    
     def __init__(self):
-        self.api_key = settings.GOOGLE_MAPS_KEY
-        self.base_url = "https://maps.googleapis.com/maps/api/geocode/json"
+        self.google_key = settings.GOOGLE_MAPS_KEY
     
-    async def geocode_address(self, address: str) -> Optional[Dict[str, Any]]:
-        if not self.api_key:
-            logger.warning("GOOGLE_MAPS_KEY not configured")
+    async def get_area_polygon(
+        self,
+        area_type: str,
+        value: str,
+        state: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Convert ZIP code or county to GeoJSON polygon.
+        
+        Args:
+            area_type: "zip" or "county"
+            value: ZIP code or county name
+            state: State code (required for county)
+            
+        Returns:
+            GeoJSON polygon or None
+        """
+        if area_type == "zip":
+            return await self._get_zip_polygon(value)
+        elif area_type == "county":
+            if not state:
+                raise ValueError("State is required for county lookup")
+            return await self._get_county_polygon(value, state)
+        else:
+            raise ValueError(f"Unknown area_type: {area_type}")
+    
+    async def _get_zip_polygon(self, zip_code: str) -> Optional[Dict[str, Any]]:
+        """Get polygon for a ZIP code using geocoding + approximate bounds."""
+        
+        # First, geocode the ZIP code to get center point
+        center = await self._geocode_address(f"{zip_code}, USA")
+        
+        if not center:
+            logger.error(f"Failed to geocode ZIP code: {zip_code}")
             return None
         
-        if not address or len(address.strip()) < 3:
+        # Create approximate polygon (ZIP codes are roughly 5-10 km across)
+        # This is an approximation - for production, use Census Bureau TIGER data
+        lat, lng = center["lat"], center["lng"]
+        
+        # Approximate 5km radius in degrees
+        lat_offset = 0.045  # ~5km
+        lng_offset = 0.055  # ~5km (varies by latitude)
+        
+        polygon = box(
+            lng - lng_offset,
+            lat - lat_offset,
+            lng + lng_offset,
+            lat + lat_offset
+        )
+        
+        return {
+            "type": "Polygon",
+            "coordinates": [list(polygon.exterior.coords)]
+        }
+    
+    async def _get_county_polygon(self, county: str, state: str) -> Optional[Dict[str, Any]]:
+        """Get polygon for a county using geocoding + approximate bounds."""
+        
+        # Geocode the county
+        center = await self._geocode_address(f"{county} County, {state}, USA")
+        
+        if not center:
+            logger.error(f"Failed to geocode county: {county}, {state}")
             return None
+        
+        lat, lng = center["lat"], center["lng"]
+        
+        # Counties are larger - approximate 30km radius
+        lat_offset = 0.27  # ~30km
+        lng_offset = 0.33  # ~30km
+        
+        polygon = box(
+            lng - lng_offset,
+            lat - lat_offset,
+            lng + lng_offset,
+            lat + lat_offset
+        )
+        
+        return {
+            "type": "Polygon",
+            "coordinates": [list(polygon.exterior.coords)]
+        }
+    
+    async def _geocode_address(self, address: str) -> Optional[Dict[str, float]]:
+        """Geocode an address to lat/lng."""
+        if not self.google_key:
+            logger.warning("   ⚠️  GOOGLE_MAPS_KEY not configured")
+            return None
+        
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        
+        logger.info(f"   📍 Geocoding: {address}")
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    self.base_url,
-                    params={"address": address, "key": self.api_key}
+                    url,
+                    params={"address": address, "key": self.google_key}
                 )
-                response.raise_for_status()
+                
+                logger.info(f"   📡 Geocoding response status: {response.status_code}")
+                
                 data = response.json()
                 
                 if data.get("status") != "OK":
-                    logger.error(f"Geocoding error: {data.get('status')}")
+                    logger.error(f"   ❌ Geocoding error: {data.get('status')} - {data.get('error_message', 'No message')}")
                     return None
                 
                 results = data.get("results", [])
                 if not results:
+                    logger.error(f"   ❌ No geocoding results found")
                     return None
                 
-                result = results[0]
-                location = result.get("geometry", {}).get("location", {})
+                location = results[0].get("geometry", {}).get("location", {})
+                lat, lng = location.get("lat"), location.get("lng")
                 
-                return {
-                    "latitude": Decimal(str(location.get("lat", 0))),
-                    "longitude": Decimal(str(location.get("lng", 0))),
-                    "formatted_address": result.get("formatted_address", address),
-                    "place_id": result.get("place_id"),
-                }
+                logger.info(f"   ✅ Geocoded to: {lat}, {lng}")
+                
+                return {"lat": lat, "lng": lng}
+                
         except Exception as e:
-            logger.error(f"Error geocoding address: {e}")
-            return None
-    
-    async def reverse_geocode(self, latitude: float, longitude: float) -> Optional[Dict[str, Any]]:
-        """Reverse geocode coordinates to get address components (ZIP, county, etc.)."""
-        if not self.api_key:
-            logger.warning("GOOGLE_MAPS_KEY not configured")
-            return None
-        
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    self.base_url,
-                    params={
-                        "latlng": f"{latitude},{longitude}",
-                        "key": self.api_key
-                    }
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get("status") != "OK":
-                    logger.error(f"Reverse geocoding error: {data.get('status')}")
-                    return None
-                
-                results = data.get("results", [])
-                if not results:
-                    return None
-                
-                result = results[0]
-                components = result.get("address_components", [])
-                
-                # Extract ZIP, county, state, city
-                zip_code = None
-                county = None
-                state = None
-                city = None
-                
-                for component in components:
-                    types = component.get("types", [])
-                    if "postal_code" in types:
-                        zip_code = component.get("long_name")
-                    elif "administrative_area_level_2" in types:  # County
-                        county = component.get("long_name")
-                    elif "administrative_area_level_1" in types:  # State
-                        state = component.get("short_name")
-                    elif "locality" in types:
-                        city = component.get("long_name")
-                
-                return {
-                    "formatted_address": result.get("formatted_address"),
-                    "zip": zip_code,
-                    "county": county,
-                    "state": state,
-                    "city": city,
-                    "place_id": result.get("place_id"),
-                }
-        except Exception as e:
-            logger.error(f"Error reverse geocoding coordinates: {e}")
+            logger.error(f"   ❌ Geocoding failed: {e}")
             return None
 
 
+# Singleton instance
 geocoding_service = GeocodingService()
-

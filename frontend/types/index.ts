@@ -26,9 +26,11 @@ export interface Deal {
   places_id?: string
   apollo_id?: string
   status: DealStatus
-  has_property_verified: boolean
+  score?: number
+  satellite_url?: string
+  has_property_verified?: boolean
   property_verification_method?: string
-  property_type: string
+  property_type?: string
   created_at: string
   updated_at?: string
 }
@@ -42,9 +44,13 @@ export interface DealMapResponse {
   latitude?: number
   longitude?: number
   status: DealStatus
+  score?: number
   deal_score?: number
   estimated_job_value?: number
   damage_severity?: DamageSeverity
+  satellite_url?: string
+  condition_score?: number
+  crack_density?: number
 }
 
 export type DamageSeverity = 'low' | 'medium' | 'high' | 'critical'

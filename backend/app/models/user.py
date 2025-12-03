@@ -20,5 +20,6 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
+    parking_lots = relationship("ParkingLot", back_populates="user", cascade="all, delete-orphan")
     deals = relationship("Deal", back_populates="user", cascade="all, delete-orphan")
-
+    usage_logs = relationship("UsageLog", back_populates="user", cascade="all, delete-orphan")

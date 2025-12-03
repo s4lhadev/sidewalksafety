@@ -4,6 +4,14 @@
 
 @layer base {
   :root {
+    /* Sidewalk Safety brand font */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+    
+    /* Sidewalk Safety brand gradient (orange-based) */
+    --primary-gradient-start: #EA580C;
+    --primary-gradient-end: #F97316;
+    
+    /* Light theme */
     --background: 0 0% 100%;
     --foreground: 222 47% 11%;
     
@@ -13,58 +21,71 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
     
-    --primary: 0 0% 0%;
+    /* Primary: Sidewalk Safety Orange */
+    --primary: 25 95% 53%;
     --primary-foreground: 0 0% 100%;
     
+    /* Secondary */
     --secondary: 220 14% 96%;
     --secondary-foreground: 222 47% 11%;
     
+    /* Muted */
     --muted: 220 14% 96%;
     --muted-foreground: 220 9% 46%;
     
-    --accent: 220 14% 96%;
-    --accent-foreground: 222 47% 11%;
+    /* Accent */
+    --accent: 25 95% 95%;
+    --accent-foreground: 25 95% 30%;
     
+    /* Destructive */
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
     
+    /* Border & Input */
     --border: 220 13% 91%;
     --input: 220 13% 91%;
-    --ring: 0 0% 0%;
+    --ring: 25 95% 53%;
     
-    --radius: 0.375rem;
+    --radius: 0.5rem;
   }
 
   .dark {
-    --background: 0 0% 0%;
+    /* Dark theme - Industrial/Construction feel */
+    --background: 220 15% 5%;
     --foreground: 0 0% 98%;
     
-    --card: 0 0% 8%;
+    --card: 220 15% 8%;
     --card-foreground: 0 0% 98%;
     
-    --popover: 0 0% 8%;
+    --popover: 220 15% 8%;
     --popover-foreground: 0 0% 98%;
     
-    --primary: 0 0% 100%;
-    --primary-foreground: 0 0% 0%;
+    /* Primary stays orange */
+    --primary: 25 95% 53%;
+    --primary-foreground: 0 0% 100%;
     
-    --secondary: 0 0% 12%;
+    /* Secondary */
+    --secondary: 220 15% 15%;
     --secondary-foreground: 0 0% 98%;
     
-    --muted: 0 0% 12%;
-    --muted-foreground: 0 0% 60%;
+    /* Muted */
+    --muted: 220 15% 12%;
+    --muted-foreground: 220 10% 55%;
     
-    --accent: 0 0% 12%;
-    --accent-foreground: 0 0% 98%;
+    /* Accent */
+    --accent: 25 95% 15%;
+    --accent-foreground: 25 95% 70%;
     
+    /* Destructive */
     --destructive: 0 63% 31%;
     --destructive-foreground: 0 0% 98%;
     
-    --border: 0 0% 20%;
-    --input: 0 0% 12%;
-    --ring: 0 0% 100%;
+    /* Border & Input */
+    --border: 220 15% 18%;
+    --input: 220 15% 12%;
+    --ring: 25 95% 53%;
     
-    --radius: 0.375rem;
+    --radius: 0.5rem;
   }
 }
 
@@ -72,67 +93,129 @@
   * {
     @apply border-border;
   }
+  
   body {
     @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-family: var(--font-sans);
+    font-feature-settings: "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "rlig" 1, "calt" 1;
-    letter-spacing: -0.011em;
   }
   
-  h1, h2, h3, h4, h5, h6 {
-    font-weight: 600;
-    letter-spacing: -0.022em;
-  }
-  
-  button, input, select, textarea {
-    font-family: inherit;
-  }
-}
-
-@layer utilities {
-  .scrollbar-elegant::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  
-  .scrollbar-elegant::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  
-  .scrollbar-elegant::-webkit-scrollbar-thumb {
-    background: hsl(var(--muted-foreground) / 0.2);
-    border-radius: 4px;
-    transition: background 0.2s ease;
-  }
-  
-  .scrollbar-elegant::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--muted-foreground) / 0.35);
-  }
-  
+  /* Smooth theme transitions */
   * {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
+    @apply transition-colors duration-200;
   }
   
-  *::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+  /* Fix autofill styling */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: hsl(var(--foreground)) !important;
+    -webkit-box-shadow: 0 0 0 1000px hsl(var(--background)) inset !important;
+    transition: background-color 5000s ease-in-out 0s;
   }
   
-  *::-webkit-scrollbar-track {
-    background: transparent;
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
   }
   
-  *::-webkit-scrollbar-thumb {
-    background: hsl(var(--muted-foreground) / 0.2);
-    border-radius: 4px;
-    transition: background 0.2s ease;
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+    border-radius: 5px;
   }
   
-  *::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--muted-foreground) / 0.35);
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 5px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
   }
 }
 
+/* Animations */
+@layer utilities {
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  
+  @keyframes slideIn {
+    from { 
+      transform: translateY(10px); 
+      opacity: 0; 
+    }
+    to { 
+      transform: translateY(0); 
+      opacity: 1; 
+    }
+  }
+  
+  @keyframes slideInLeft {
+    from { 
+      transform: translateX(-20px); 
+      opacity: 0; 
+    }
+    to { 
+      transform: translateX(0); 
+      opacity: 1; 
+    }
+  }
+  
+  @keyframes pulse-glow {
+    0%, 100% {
+      box-shadow: 0 0 20px rgba(249, 115, 22, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 40px rgba(249, 115, 22, 0.5);
+    }
+  }
+  
+  @keyframes float {
+    0%, 100% {
+      transform: translateY(0px);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+  
+  .animate-fade-in {
+    animation: fadeIn 300ms ease-in-out;
+  }
+  
+  .animate-slide-in {
+    animation: slideIn 400ms ease-out;
+  }
+  
+  .animate-slide-in-left {
+    animation: slideInLeft 500ms ease-out;
+  }
+  
+  .animate-pulse-glow {
+    animation: pulse-glow 3s ease-in-out infinite;
+  }
+  
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+  
+  /* Gradient text utility */
+  .text-gradient {
+    background: linear-gradient(135deg, var(--primary-gradient-start) 0%, var(--primary-gradient-end) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  /* Glass effect */
+  .glass {
+    background: hsl(var(--background) / 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+}

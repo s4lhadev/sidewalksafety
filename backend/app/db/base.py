@@ -3,7 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
-database_url = settings.SUPABASE_DB_URL or settings.DATABASE_URL
+database_url = settings.DATABASE_URL
 
 is_supabase_pooler = "pooler.supabase.com" in database_url or "supabase.co" in database_url
 
@@ -65,4 +65,3 @@ def get_db():
         raise
     finally:
         db.close()
-

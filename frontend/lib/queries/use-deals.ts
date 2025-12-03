@@ -7,6 +7,7 @@ export function useDeals(status?: string) {
   return useQuery({
     queryKey: ['deals', status],
     queryFn: () => dealsApi.getDeals(status),
+    refetchInterval: 10000, // Refetch every 10s to get new discoveries
   })
 }
 
@@ -28,6 +29,7 @@ export function useDealsForMap(params?: {
   return useQuery({
     queryKey: ['deals', 'map', params],
     queryFn: () => dealsApi.getDealsForMap(params),
+    refetchInterval: 10000, // Refetch every 10s to get new discoveries
   })
 }
 
@@ -35,22 +37,24 @@ export function useScrapeDeals() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (request: GeographicSearchRequest) => dealsApi.scrape(request),
+    mutationFn: (request: GeographicSearchRequest) => dealsApi.discover(request),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['deals'] })
-      queryClient.invalidateQueries({ queryKey: ['deals', 'map'] })
+      // Invalidate after a short delay to allow backend to process
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['deals'] })
+      }, 3000)
+      
       toast({
-        title: 'Scraping completed',
-        description: data.message,
+        title: 'Discovery Started',
+        description: `Job started. Parking lots will appear on the map as they are discovered.`,
       })
     },
     onError: (error: any) => {
       toast({
         variant: 'destructive',
-        title: 'Scraping failed',
-        description: error.response?.data?.detail || 'Failed to scrape deals',
+        title: 'Discovery failed',
+        description: error.response?.data?.detail || 'Failed to start discovery',
       })
     },
   })
 }
-

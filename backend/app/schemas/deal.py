@@ -1,78 +1,104 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
+from enum import Enum
 
 
-class DealBase(BaseModel):
-    business_name: str
-    address: str
-    city: Optional[str] = None
-    state: Optional[str] = None
-    zip: Optional[str] = None
-    county: Optional[str] = None
+class DealStatus(str, Enum):
+    PENDING = "pending"
+    CONTACTED = "contacted"
+    QUOTED = "quoted"
+    NEGOTIATING = "negotiating"
+    WON = "won"
+    LOST = "lost"
+
+
+# ============ Deal Schemas ============
+
+class DealCreate(BaseModel):
+    parking_lot_id: UUID
+    business_id: Optional[UUID] = None
+    estimated_job_value: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class DealUpdate(BaseModel):
+    status: Optional[DealStatus] = None
+    quoted_amount: Optional[float] = None
+    final_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class DealResponse(BaseModel):
+    id: UUID
+    parking_lot_id: UUID
+    business_id: Optional[UUID] = None
+    status: DealStatus
+    estimated_job_value: Optional[float] = None
+    quoted_amount: Optional[float] = None
+    final_amount: Optional[float] = None
+    priority_score: Optional[float] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    contacted_at: Optional[datetime] = None
+    quoted_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DealDetailResponse(DealResponse):
+    """Deal with full parking lot and business details."""
+    parking_lot: Optional["ParkingLotSummaryForDeal"] = None
+    business: Optional["BusinessSummaryForDeal"] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ParkingLotSummaryForDeal(BaseModel):
+    id: UUID
+    area_sqft: Optional[float] = None
+    condition_score: Optional[float] = None
+    satellite_image_url: Optional[str] = None
+    centroid: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BusinessSummaryForDeal(BaseModel):
+    id: UUID
+    name: str
     phone: Optional[str] = None
     email: Optional[str] = None
     website: Optional[str] = None
+    address: Optional[str] = None
     category: Optional[str] = None
 
-
-class DealCreate(DealBase):
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    places_id: Optional[str] = None
-    apollo_id: Optional[str] = None
-    has_property_verified: Optional[bool] = False
-    property_verification_method: Optional[str] = None
-    property_type: Optional[str] = "parking_lot"
-
-
-class DealResponse(DealBase):
-    id: UUID
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    places_id: Optional[str] = None
-    status: str
-    has_property_verified: bool
-    property_verification_method: Optional[str] = None
-    property_type: str
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
     class Config:
         from_attributes = True
 
 
-class GeographicSearchRequest(BaseModel):
-    area_type: str  # "zip" or "county"
-    value: str  # zip code or county name
-    state: Optional[str] = None  # Required if county
-    max_deals: Optional[int] = Field(
-        default=50,
-        ge=1,
-        le=200,
-        description="Maximum number of deals to scrape (1-200, default: 50). Higher limits increase API costs."
-    )
+# ============ List/Filter Schemas ============
+
+class DealListParams(BaseModel):
+    status: Optional[DealStatus] = None
+    min_priority_score: Optional[float] = None
+    min_estimated_value: Optional[float] = None
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
-class GeographicSearchResponse(BaseModel):
-    job_id: str
-    status: str
-    message: str
+class DealListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    results: List[DealDetailResponse]
 
 
-class DealMapResponse(BaseModel):
-    """Deal response optimized for map display."""
-    id: UUID
-    business_name: str
-    address: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    status: str
-    deal_score: Optional[float] = None
-    estimated_job_value: Optional[float] = None
-    damage_severity: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
+# Forward reference update
+DealDetailResponse.model_rebuild()

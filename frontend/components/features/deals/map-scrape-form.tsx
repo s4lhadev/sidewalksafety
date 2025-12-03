@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { useScrapeDeals } from '@/lib/queries/use-deals'
 import { Button } from '@/components/ui/button'
-import { InputField } from '@/components/common/form-field'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Dialog,
   DialogContent,
@@ -13,7 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Search, MapPin } from 'lucide-react'
+import { Plus, MapPin, Loader2, Sparkles } from 'lucide-react'
 
 interface MapScrapeFormProps {
   onScrapeComplete?: () => void
@@ -21,10 +22,10 @@ interface MapScrapeFormProps {
 
 export function MapScrapeForm({ onScrapeComplete }: MapScrapeFormProps) {
   const [open, setOpen] = useState(false)
-  const [areaType, setAreaType] = useState<'zip' | 'county'>('county')
+  const [areaType, setAreaType] = useState<'zip' | 'county'>('zip')
   const [value, setValue] = useState('')
   const [state, setState] = useState('')
-  const [maxDeals, setMaxDeals] = useState(50)
+  const [maxDeals, setMaxDeals] = useState(10)
 
   const scrapeDeals = useScrapeDeals()
 
@@ -51,88 +52,157 @@ export function MapScrapeForm({ onScrapeComplete }: MapScrapeFormProps) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
-          <MapPin className="h-3.5 w-3.5 mr-2" />
-          Scrape Area
-        </Button>
+        <button 
+          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl shadow-lg hover:shadow-xl hover:from-orange-600 hover:to-orange-700 transition-all font-medium text-sm"
+          style={{ boxShadow: '0 8px 20px -4px rgba(249, 115, 22, 0.4)' }}
+        >
+          <Plus className="h-4 w-4" />
+          Discover Area
+        </button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Scrape Deals by Area</DialogTitle>
-          <DialogDescription>
-            Find parking lot deals in a specific zip code or county
-          </DialogDescription>
+          <div className="flex items-center gap-3 mb-1">
+            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center">
+              <Sparkles className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <DialogTitle className="text-lg">Discover Parking Lots</DialogTitle>
+              <DialogDescription className="text-sm">
+                AI-powered discovery in your target area
+              </DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
+
+        <form onSubmit={handleSubmit} className="space-y-5 mt-4">
+          {/* Area Type Toggle */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Search Type</label>
-            <div className="flex gap-2">
-              <Button
+            <Label className="text-sm font-medium">Search by</Label>
+            <div className="flex gap-2 p-1 bg-muted rounded-lg">
+              <button
                 type="button"
-                variant={areaType === 'zip' ? 'default' : 'outline'}
-                size="sm"
                 onClick={() => setAreaType('zip')}
+                className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  areaType === 'zip'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
               >
-                Zip Code
-              </Button>
-              <Button
+                ZIP Code
+              </button>
+              <button
                 type="button"
-                variant={areaType === 'county' ? 'default' : 'outline'}
-                size="sm"
                 onClick={() => setAreaType('county')}
+                className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  areaType === 'county'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
               >
                 County
-              </Button>
+              </button>
             </div>
           </div>
 
+          {/* Location Input */}
           {areaType === 'zip' ? (
-            <InputField
-              label="Zip Code"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              required
-              placeholder="12345"
-            />
+            <div className="space-y-2">
+              <Label htmlFor="zip">ZIP Code</Label>
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="zip"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  required
+                  placeholder="90210"
+                  className="pl-10 h-11"
+                />
+              </div>
+            </div>
           ) : (
-            <>
-              <InputField
-                label="County"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                required
-                placeholder="Los Angeles"
-              />
-              <InputField
-                label="State"
-                value={state}
-                onChange={(e) => setState(e.target.value)}
-                required
-                placeholder="CA"
-              />
-            </>
+            <div className="grid gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="county">County</Label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="county"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    required
+                    placeholder="Los Angeles"
+                    className="pl-10 h-11"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="state">State</Label>
+                <Input
+                  id="state"
+                  value={state}
+                  onChange={(e) => setState(e.target.value)}
+                  required
+                  placeholder="CA"
+                  className="h-11"
+                  maxLength={2}
+                />
+              </div>
+            </div>
           )}
 
-          <InputField
-            label="Max Deals"
-            type="number"
-            value={maxDeals.toString()}
-            onChange={(e) => setMaxDeals(parseInt(e.target.value) || 50)}
-            min={1}
-            max={200}
-            helperText="Higher limits increase API costs (1-200)"
-          />
+          {/* Max Results */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="maxDeals">Max parking lots</Label>
+              <span className="text-xs text-muted-foreground">Cost control</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                id="maxDeals"
+                min={5}
+                max={50}
+                step={5}
+                value={maxDeals}
+                onChange={(e) => setMaxDeals(parseInt(e.target.value))}
+                className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+              />
+              <span className="w-12 text-center text-sm font-medium bg-muted px-2 py-1 rounded-md">
+                {maxDeals}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Higher limits use more API credits
+            </p>
+          </div>
 
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-0">
             <Button
               type="button"
               variant="outline"
               onClick={() => setOpen(false)}
+              className="flex-1 sm:flex-none"
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={scrapeDeals.isPending}>
-              {scrapeDeals.isPending ? 'Scraping...' : 'Scrape'}
+            <Button 
+              type="submit" 
+              disabled={scrapeDeals.isPending}
+              className="flex-1 sm:flex-none bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700"
+            >
+              {scrapeDeals.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Discovering...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  Start Discovery
+                </>
+              )}
             </Button>
           </DialogFooter>
         </form>
@@ -140,4 +210,3 @@ export function MapScrapeForm({ onScrapeComplete }: MapScrapeFormProps) {
     </Dialog>
   )
 }
-

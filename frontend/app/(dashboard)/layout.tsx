@@ -20,16 +20,19 @@ export default function DashboardLayout({
   }, [isAuthenticated, router])
 
   if (!isAuthenticated) {
-    return null
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent" />
+      </div>
+    )
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden bg-background">
       <Header />
-      <main className="flex-1 container mx-auto px-4 py-6">
+      <main className="flex-1 overflow-hidden">
         {children}
       </main>
     </div>
   )
 }
-

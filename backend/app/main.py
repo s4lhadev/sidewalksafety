@@ -3,16 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.api.v1.router import api_router
-from app.db.base import Base, engine
-from app.models import Deal, Evaluation, User
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Sidewalk Safety API",
-    description="Lead scraping and deal evaluation API",
-    version="1.0.0",
+    description="Parking lot discovery and condition evaluation API for parking lot repair companies",
+    version="2.0.0",
 )
+
 
 def custom_openapi():
     if app.openapi_schema:
@@ -22,8 +19,8 @@ def custom_openapi():
     
     openapi_schema = get_openapi(
         title="Sidewalk Safety API",
-        version="1.0.0",
-        description="Lead scraping and deal evaluation API",
+        version="2.0.0",
+        description="Parking lot discovery and condition evaluation API",
         routes=app.routes,
     )
     
@@ -39,6 +36,7 @@ def custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
+
 app.openapi = custom_openapi
 
 app.add_middleware(
@@ -51,6 +49,7 @@ app.add_middleware(
     max_age=3600,
 )
 
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
@@ -59,13 +58,19 @@ async def general_exception_handler(request: Request, exc: Exception):
         headers={"Access-Control-Allow-Origin": "*"},
     )
 
+
 @app.get("/")
 def root():
-    return {"message": "Sidewalk Safety API", "version": "1.0.0"}
+    return {
+        "message": "Sidewalk Safety API",
+        "version": "2.0.0",
+        "description": "Parking lot discovery and condition evaluation platform",
+    }
+
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
 
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+app.include_router(api_router, prefix=settings.API_V1_PREFIX)
