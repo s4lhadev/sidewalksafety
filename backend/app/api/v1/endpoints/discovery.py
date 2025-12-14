@@ -13,12 +13,49 @@ from app.schemas.discovery import (
     DiscoveryFilters,
     DiscoveryStep,
     DiscoveryProgress,
+    DiscoveryMode,
+    BUSINESS_TYPE_OPTIONS,
 )
 from app.core.dependencies import get_current_user
-from app.core.discovery_orchestrator import discovery_orchestrator
+from app.core.discovery_orchestrator import discovery_orchestrator, DiscoveryMode as OrchestratorMode
 from app.core.geocoding_service import geocoding_service
 
 router = APIRouter()
+
+
+@router.get("/business-types")
+async def get_business_type_options():
+    """
+    Get available business type options for discovery.
+    
+    Returns a list of business types grouped by tier (premium, high, standard).
+    Use these IDs in the `business_type_ids` field when starting discovery.
+    """
+    return {
+        "tiers": [
+            {
+                "id": "premium",
+                "label": "Premium (High Success Rate)",
+                "icon": "trophy",
+                "description": "HOAs, apartments - almost always have parking lots",
+                "types": BUSINESS_TYPE_OPTIONS["premium"],
+            },
+            {
+                "id": "high",
+                "label": "High Priority",
+                "icon": "star",
+                "description": "Commercial properties with large parking areas",
+                "types": BUSINESS_TYPE_OPTIONS["high"],
+            },
+            {
+                "id": "standard",
+                "label": "Standard",
+                "icon": "map-pin",
+                "description": "Other businesses that may have parking lots",
+                "types": BUSINESS_TYPE_OPTIONS["standard"],
+            },
+        ]
+    }
 
 
 @router.post("", response_model=DiscoveryJobResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -33,15 +70,19 @@ async def start_discovery(
     
     This is an async operation. Returns a job_id that can be used to check status.
     
-    The discovery process:
-    1. Converts area (ZIP/county/polygon) to GeoJSON polygon
-    2. Queries INRIX, HERE, and OSM for parking lots
-    3. Normalizes and deduplicates results
-    4. Fetches satellite imagery for each lot
-    5. Evaluates condition using computer vision
-    6. Loads business data from Infobel/SafeGraph
-    7. Associates parking lots with businesses
-    8. Filters for high-value leads
+    Two discovery modes available:
+    
+    **business_first** (recommended, default):
+    1. Find businesses by type (HOAs, apartments, shopping centers)
+    2. Find parking lots for each business
+    3. Fetch satellite imagery and evaluate condition
+    4. Return prioritized leads with contact info
+    
+    **parking_first** (legacy):
+    1. Find all parking lots in area
+    2. Fetch satellite imagery and evaluate condition
+    3. Find nearby businesses
+    4. Associate parking lots with businesses
     """
     # Validate request
     if request.area_type == "county" and not request.state:
@@ -79,6 +120,16 @@ async def start_discovery(
     # Initialize job status BEFORE starting background task (so status endpoint works immediately)
     discovery_orchestrator.initialize_job(job_id, current_user.id)
     
+    # Convert schema mode to orchestrator mode
+    orchestrator_mode = OrchestratorMode.BUSINESS_FIRST
+    if request.mode == DiscoveryMode.PARKING_FIRST:
+        orchestrator_mode = OrchestratorMode.PARKING_FIRST
+    
+    # Convert tiers to strings if provided
+    tier_strings = None
+    if request.tiers:
+        tier_strings = [t.value for t in request.tiers]
+    
     # Start discovery in background
     background_tasks.add_task(
         discovery_orchestrator.start_discovery,
@@ -86,13 +137,22 @@ async def start_discovery(
         current_user.id,
         area_polygon,
         filters,
-        db
+        db,
+        orchestrator_mode,
+        tier_strings,
+        request.business_type_ids,
     )
+    
+    mode_desc = "business-first" if orchestrator_mode == OrchestratorMode.BUSINESS_FIRST else "parking-first"
+    
+    # Add tier info to message if specified
+    if tier_strings:
+        mode_desc += f" [{', '.join(tier_strings)}]"
     
     return DiscoveryJobResponse(
         job_id=job_id,
         status=DiscoveryStep.QUEUED,
-        message="Discovery started. Use GET /discover/{job_id} to check status.",
+        message=f"Discovery started ({mode_desc}). Use GET /discover/{{job_id}} to check status.",
         estimated_completion=datetime.utcnow() + timedelta(minutes=5),
     )
 

@@ -43,6 +43,22 @@ export const dealsApi = {
       score: lot.condition_score,
       satellite_url: lot.satellite_image_url,
       created_at: lot.created_at,
+      // Business association data
+      business: lot.business ? {
+        id: lot.business.id,
+        name: lot.business.name,
+        phone: lot.business.phone,
+        email: lot.business.email,
+        website: lot.business.website,
+        address: lot.business.address,
+        category: lot.business.category,
+      } : undefined,
+      has_business: !!lot.business,
+      match_score: lot.match_score,
+      distance_meters: lot.distance_meters,
+      // Business-first discovery fields
+      business_type_tier: lot.business_type_tier,
+      discovery_mode: lot.discovery_mode,
     }))
   },
 
@@ -84,7 +100,7 @@ export const dealsApi = {
     const features = data.features || []
     return features.map((feature: any) => ({
       id: feature.properties.id,
-      business_name: feature.properties.business_name || 'Parking Lot',
+      business_name: feature.properties.business_name || feature.properties.operator_name || 'Parking Lot',
       address: feature.properties.address || '',
       latitude: feature.geometry.coordinates[1],
       longitude: feature.geometry.coordinates[0],
@@ -92,6 +108,8 @@ export const dealsApi = {
       score: feature.properties.condition_score,
       condition_score: feature.properties.condition_score,
       satellite_url: feature.properties.satellite_image_url,
+      business_type_tier: feature.properties.business_type_tier,
+      has_business: feature.properties.has_business,
     }))
   },
 }

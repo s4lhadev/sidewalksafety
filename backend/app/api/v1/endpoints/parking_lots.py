@@ -45,6 +45,9 @@ def parking_lot_to_response(lot: ParkingLot, include_business: bool = False) -> 
         "data_sources": lot.data_sources or [],
         "created_at": lot.created_at,
         "evaluated_at": lot.evaluated_at,
+        # Business-first discovery fields
+        "business_type_tier": lot.business_type_tier,
+        "discovery_mode": lot.discovery_mode,
     }
     
     # Add geometry if available
@@ -212,8 +215,13 @@ def get_parking_lots_for_map(
                 "area_m2": float(lot.area_m2) if lot.area_m2 else None,
                 "condition_score": float(lot.condition_score) if lot.condition_score else None,
                 "business_name": business_name,
+                "address": lot.address,
+                "satellite_image_url": lot.satellite_image_url,
+                "operator_name": lot.operator_name,
                 "has_business": has_biz,
                 "is_evaluated": lot.is_evaluated,
+                "business_type_tier": lot.business_type_tier,
+                "discovery_mode": lot.discovery_mode,
             }
         })
     
@@ -243,6 +251,27 @@ def get_parking_lot(
     response["raw_metadata"] = lot.raw_metadata
     response["evaluation_error"] = lot.evaluation_error
     response["updated_at"] = lot.updated_at
+    
+    # Include primary business association if available
+    primary_assoc = db.query(ParkingLotBusinessAssociation).filter(
+        ParkingLotBusinessAssociation.parking_lot_id == parking_lot_id,
+        ParkingLotBusinessAssociation.is_primary == True
+    ).first()
+    
+    if primary_assoc:
+        business = db.query(Business).filter(Business.id == primary_assoc.business_id).first()
+        if business:
+            response["business"] = BusinessSummary(
+                id=business.id,
+                name=business.name,
+                phone=business.phone,
+                email=business.email,
+                website=business.website,
+                address=business.address,
+                category=business.category,
+            )
+            response["match_score"] = float(primary_assoc.match_score)
+            response["distance_meters"] = float(primary_assoc.distance_meters)
     
     return ParkingLotDetailResponse(**response)
 

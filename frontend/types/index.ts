@@ -8,6 +8,16 @@ export interface User {
   created_at: string
 }
 
+export interface BusinessInfo {
+  id: string
+  name: string
+  phone?: string
+  email?: string
+  website?: string
+  address?: string
+  category?: string
+}
+
 export interface Deal {
   id: string
   user_id: string
@@ -33,6 +43,14 @@ export interface Deal {
   property_type?: string
   created_at: string
   updated_at?: string
+  // Business association
+  business?: BusinessInfo
+  has_business: boolean
+  match_score?: number
+  distance_meters?: number
+  // Business-first discovery fields
+  business_type_tier?: 'premium' | 'high' | 'standard'
+  discovery_mode?: 'business_first' | 'parking_first'
 }
 
 export type DealStatus = 'pending' | 'evaluating' | 'evaluated' | 'archived'
@@ -51,6 +69,10 @@ export interface DealMapResponse {
   satellite_url?: string
   condition_score?: number
   crack_density?: number
+  // Business-first discovery fields
+  business_type_tier?: 'premium' | 'high' | 'standard'
+  business?: BusinessInfo
+  has_business?: boolean
 }
 
 export type DamageSeverity = 'low' | 'medium' | 'high' | 'critical'
@@ -80,6 +102,8 @@ export interface GeographicSearchRequest {
   value: string
   state?: string
   max_deals?: number
+  business_type_ids?: string[]
+  tiers?: ('premium' | 'high' | 'standard')[]
 }
 
 export interface GeographicSearchResponse {

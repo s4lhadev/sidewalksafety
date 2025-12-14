@@ -56,6 +56,10 @@ class ParkingLot(Base):
     raw_metadata = Column(JSONB, nullable=True)  # Original API responses
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Business-first discovery fields
+    business_type_tier = Column(String(20), nullable=True)  # "premium", "high", "standard"
+    discovery_mode = Column(String(20), nullable=True)  # "business_first" or "parking_first"
 
     # Relationships
     user = relationship("User", back_populates="parking_lots")

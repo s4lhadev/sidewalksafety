@@ -3,7 +3,7 @@
 import { useMemo, useCallback, useEffect, useState } from 'react'
 import { APIProvider, Map, Marker, useMap, InfoWindow } from '@vis.gl/react-google-maps'
 import { DealMapResponse } from '@/types'
-import { MapPin, ExternalLink, Satellite, Map as MapIcon } from 'lucide-react'
+import { MapPin, ExternalLink, Satellite, Map as MapIcon, X } from 'lucide-react'
 
 interface InteractiveMapProps {
   deals: DealMapResponse[]
@@ -340,10 +340,10 @@ function ParkingLotPopup({
   onClose: () => void
 }) {
   const getScoreColor = (score: number) => {
-    if (score < 30) return 'text-red-500'
-    if (score < 50) return 'text-orange-500'
-    if (score < 70) return 'text-yellow-600'
-    return 'text-green-500'
+    if (score < 30) return { text: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' }
+    if (score < 50) return { text: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' }
+    if (score < 70) return { text: 'text-yellow-600', bg: 'bg-yellow-50', border: 'border-yellow-200' }
+    return { text: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' }
   }
 
   const getScoreLabel = (score: number) => {
@@ -353,69 +353,79 @@ function ParkingLotPopup({
     return 'Excellent - Low Priority'
   }
 
+  const scoreColors = deal.score !== null && deal.score !== undefined ? getScoreColor(deal.score) : null
+
   return (
-    <div className="w-72 p-0 -m-2">
+    <div className="w-80 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
+      {/* Close Button */}
+      <button
+        onClick={onClose}
+        className="absolute top-2 right-2 z-10 h-6 w-6 flex items-center justify-center rounded-full bg-white/90 backdrop-blur-sm border border-slate-200 hover:bg-white transition-colors"
+      >
+        <X className="h-3 w-3 text-slate-600" />
+      </button>
+
       {/* Satellite Image */}
       {deal.satellite_url ? (
-        <div className="relative h-36 bg-slate-100 rounded-t-lg overflow-hidden">
+        <div className="relative h-40 bg-slate-50 overflow-hidden">
           <img 
             src={deal.satellite_url} 
             alt="Satellite view"
             className="w-full h-full object-cover"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-          <div className="absolute bottom-2 left-2 right-2">
-            <p className="text-white text-xs font-medium truncate">{deal.address || deal.business_name}</p>
-          </div>
         </div>
       ) : (
-        <div className="h-24 bg-slate-100 rounded-t-lg flex items-center justify-center">
-          <MapPin className="h-8 w-8 text-slate-300" />
+        <div className="h-40 bg-slate-50 flex items-center justify-center">
+          <MapPin className="h-10 w-10 text-slate-300" />
         </div>
       )}
 
       {/* Content */}
-      <div className="p-3 space-y-3">
-        {/* Score */}
-        {deal.score !== null && deal.score !== undefined && (
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-500">Condition Score</span>
-              <span className={`text-lg font-bold ${getScoreColor(deal.score)}`}>
-                {Math.round(deal.score)}%
+      <div className="p-4 space-y-3">
+        {/* Location */}
+        <div className="space-y-1">
+          <h3 className="text-sm font-medium text-slate-900 truncate">{deal.business_name}</h3>
+          <div className="flex items-start gap-1.5 text-xs text-slate-500">
+            <MapPin className="h-3 w-3 flex-shrink-0 mt-0.5" />
+            <span className="leading-relaxed">{deal.address}</span>
+          </div>
+        </div>
+
+        {/* Condition Score */}
+        {deal.score !== null && deal.score !== undefined && scoreColors && (
+          <div className={`p-3 rounded-lg border ${scoreColors.bg} ${scoreColors.border}`}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Condition Score</span>
+              <span className={`text-xl font-light ${scoreColors.text}`} style={{ letterSpacing: '-0.03em' }}>
+                {Math.round(deal.score)}
               </span>
             </div>
-            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+            <div className="h-1 bg-slate-100 rounded-full overflow-hidden mb-1">
               <div 
-                className="h-full rounded-full transition-all"
-                style={{ 
-                  width: `${deal.score}%`,
-                  background: deal.score < 50 
-                    ? 'linear-gradient(90deg, #ef4444, #f97316)' 
-                    : 'linear-gradient(90deg, #22c55e, #84cc16)'
-                }}
+                className={`h-full ${scoreColors.text.replace('text-', 'bg-').replace('-600', '-500')} transition-all`}
+                style={{ width: `${deal.score}%` }}
               />
             </div>
-            <p className="text-xs text-slate-500">{getScoreLabel(deal.score)}</p>
+            <p className="text-[10px] text-slate-500">{getScoreLabel(deal.score)}</p>
           </div>
         )}
 
-        {/* Status Badge */}
-        <div className="flex items-center justify-between">
+        {/* Status & Actions */}
+        <div className="flex items-center justify-between pt-2 border-t border-slate-100">
           <span className={`
-            text-xs px-2 py-1 rounded-full font-medium
+            text-[10px] px-2 py-0.5 rounded border font-medium
             ${deal.status === 'evaluated' 
-              ? 'bg-green-100 text-green-700' 
+              ? 'border-green-300 text-green-700 bg-green-50/50' 
               : deal.status === 'evaluating'
-              ? 'bg-blue-100 text-blue-700'
-              : 'bg-orange-100 text-orange-700'
+              ? 'border-blue-300 text-blue-700 bg-blue-50/50'
+              : 'border-orange-300 text-orange-700 bg-orange-50/50'
             }
           `}>
             {deal.status.charAt(0).toUpperCase() + deal.status.slice(1)}
           </span>
           <button
             onClick={onViewDetails}
-            className="text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-1"
+            className="text-[10px] font-medium text-slate-600 hover:text-slate-900 flex items-center gap-1 transition-colors"
           >
             View Details
             <ExternalLink className="h-3 w-3" />

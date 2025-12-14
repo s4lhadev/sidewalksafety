@@ -3,11 +3,14 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from uuid import UUID
+from enum import Enum
 from sqlalchemy.orm import Session
 from shapely.geometry import shape
-from geoalchemy2.shape import to_shape
+from geoalchemy2.shape import to_shape, from_shape
 
 from app.models.parking_lot import ParkingLot
+from app.models.business import Business
+from app.models.association import ParkingLotBusinessAssociation
 from app.schemas.discovery import DiscoveryStep, DiscoveryProgress, DiscoveryFilters
 from app.core.parking_lot_discovery_service import parking_lot_discovery_service
 from app.core.normalization_service import normalization_service
@@ -16,7 +19,19 @@ from app.core.association_service import association_service
 from app.core.imagery_service import imagery_service
 from app.core.condition_evaluation_service import condition_evaluation_service
 from app.core.usage_tracking_service import usage_tracking_service
+from app.core.business_first_discovery_service import (
+    business_first_discovery_service,
+    BusinessTier,
+    DiscoveredBusiness,
+)
+from app.core.parking_lot_finder_service import parking_lot_finder_service
 from app.core.config import settings
+
+
+class DiscoveryMode(str, Enum):
+    """Discovery pipeline mode."""
+    BUSINESS_FIRST = "business_first"  # Find businesses → parking lots
+    PARKING_FIRST = "parking_first"    # Find parking lots → businesses (legacy)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -48,11 +63,24 @@ class DiscoveryOrchestrator:
         user_id: UUID,
         area_polygon: Dict[str, Any],
         filters: DiscoveryFilters,
-        db: Session
+        db: Session,
+        mode: DiscoveryMode = DiscoveryMode.BUSINESS_FIRST,
+        tiers: Optional[List[str]] = None,
+        business_type_ids: Optional[List[str]] = None,
     ) -> None:
         """
         Start the discovery pipeline.
         This runs as a background task.
+        
+        Args:
+            job_id: Unique job identifier
+            user_id: User running the job
+            area_polygon: GeoJSON polygon defining search area
+            filters: Discovery filters (max_lots, etc.)
+            db: Database session
+            mode: Discovery mode (business_first or parking_first)
+            tiers: List of tiers to search ("premium", "high", "standard")
+            business_type_ids: Specific business type IDs to search
         """
         job_key = str(job_id)
         
@@ -60,8 +88,19 @@ class DiscoveryOrchestrator:
         if job_key not in self._jobs:
             self.initialize_job(job_id, user_id)
         
+        self._jobs[job_key]["mode"] = mode.value
+        self._jobs[job_key]["tiers"] = tiers
+        self._jobs[job_key]["business_type_ids"] = business_type_ids
+        
         try:
-            await self._run_pipeline(job_id, user_id, area_polygon, filters, db)
+            if mode == DiscoveryMode.BUSINESS_FIRST:
+                await self._run_business_first_pipeline(
+                    job_id, user_id, area_polygon, filters, db,
+                    tiers=tiers,
+                    business_type_ids=business_type_ids,
+                )
+            else:
+                await self._run_pipeline(job_id, user_id, area_polygon, filters, db)
         except Exception as e:
             logger.error(f"❌ Discovery pipeline failed: {e}")
             self._update_job(job_key, DiscoveryStep.FAILED, error=str(e))
@@ -209,6 +248,308 @@ class DiscoveryOrchestrator:
                 "high_value_leads": high_value_count,
                 "associations_made": assoc_stats["associations_made"],
                 "duration_seconds": elapsed,
+                "mode": "parking_first",
+            }
+        )
+    
+    async def _run_business_first_pipeline(
+        self,
+        job_id: UUID,
+        user_id: UUID,
+        area_polygon: Dict[str, Any],
+        filters: DiscoveryFilters,
+        db: Session,
+        tiers: Optional[List[str]] = None,
+        business_type_ids: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Run the business-first discovery pipeline.
+        
+        1. Find businesses by type (HOA, apartments, etc.)
+        2. Find parking lots near each business
+        3. Fetch imagery and evaluate condition
+        4. Create leads with business + parking lot + score
+        
+        Args:
+            tiers: List of tier strings to search ("premium", "high", "standard")
+            business_type_ids: Specific business type IDs to search
+        """
+        job_key = str(job_id)
+        start_time = datetime.utcnow()
+        
+        # Convert tier strings to BusinessTier enums
+        tier_enums = None
+        if tiers:
+            tier_enums = []
+            for t in tiers:
+                if t == "premium":
+                    tier_enums.append(BusinessTier.PREMIUM)
+                elif t == "high":
+                    tier_enums.append(BusinessTier.HIGH)
+                elif t == "standard":
+                    tier_enums.append(BusinessTier.STANDARD)
+        
+        tier_desc = ", ".join(tiers) if tiers else "all"
+        
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"🚀 BUSINESS-FIRST DISCOVERY PIPELINE STARTED")
+        logger.info(f"   Job ID: {job_id}")
+        logger.info(f"   User ID: {user_id}")
+        logger.info(f"   Max results: {filters.max_lots}")
+        logger.info(f"   Tiers: {tier_desc}")
+        if business_type_ids:
+            logger.info(f"   Business types: {', '.join(business_type_ids)}")
+        logger.info("=" * 60)
+        
+        # Get polygon centroid and bounds
+        poly = shape(area_polygon)
+        centroid = poly.centroid
+        bounds = poly.bounds  # (minx, miny, maxx, maxy)
+        
+        # Calculate search radius from bounds
+        lat_range = bounds[3] - bounds[1]
+        lng_range = bounds[2] - bounds[0]
+        radius_meters = int(max(lat_range, lng_range) * 111000 / 2 * 1.2)
+        radius_meters = min(radius_meters, 50000)  # Cap at 50km
+        
+        # ============ Step 1: Discover businesses by type ============
+        logger.info("")
+        logger.info("🏢 STEP 1: Discovering businesses by type...")
+        self._update_job(job_key, DiscoveryStep.LOADING_BUSINESSES)
+        
+        discovered_businesses = await business_first_discovery_service.discover_businesses(
+            center_lat=centroid.y,
+            center_lng=centroid.x,
+            radius_meters=radius_meters,
+            tiers=tier_enums,
+            business_type_ids=business_type_ids,
+            max_per_tier=20,
+            max_total=filters.max_lots,
+        )
+        
+        # Count by tier
+        premium_count = len([b for b in discovered_businesses if b.tier == BusinessTier.PREMIUM])
+        high_count = len([b for b in discovered_businesses if b.tier == BusinessTier.HIGH])
+        standard_count = len([b for b in discovered_businesses if b.tier == BusinessTier.STANDARD])
+        
+        logger.info(f"   ✅ Found {len(discovered_businesses)} businesses:")
+        logger.info(f"      🏆 Premium (HOA/Apartments): {premium_count}")
+        logger.info(f"      ⭐ High (Shopping/Hotels): {high_count}")
+        logger.info(f"      📍 Standard (Other): {standard_count}")
+        
+        self._jobs[job_key]["progress"].businesses_loaded = len(discovered_businesses)
+        
+        if not discovered_businesses:
+            logger.warning("   ⚠️  No businesses found in area")
+            self._update_job(job_key, DiscoveryStep.COMPLETED)
+            return
+        
+        # ============ Step 2: Find parking lots for each business ============
+        logger.info("")
+        logger.info("🅿️  STEP 2: Finding parking lots for each business...")
+        self._update_job(job_key, DiscoveryStep.COLLECTING_PARKING_LOTS)
+        
+        processed_count = 0
+        evaluated_count = 0
+        parking_lot_ids: List[UUID] = []
+        
+        for idx, business in enumerate(discovered_businesses):
+            try:
+                logger.info(f"   [{idx+1}/{len(discovered_businesses)}] {business.name} ({business.tier.value})")
+                
+                # Find parking lot near business
+                found_lot = await parking_lot_finder_service.find_parking_lot(
+                    business_lat=business.latitude,
+                    business_lng=business.longitude,
+                    business_type=business.business_type,
+                    search_radius_m=150,
+                )
+                
+                logger.info(f"      📍 Found {found_lot.source} parking lot: {found_lot.area_m2:.0f}m²")
+                
+                # Save business to database
+                existing_business = db.query(Business).filter(
+                    Business.places_id == business.places_id
+                ).first()
+                
+                if existing_business:
+                    db_business = existing_business
+                    # Update contact info if we have new data
+                    if business.phone and not existing_business.phone:
+                        existing_business.phone = business.phone
+                    if business.website and not existing_business.website:
+                        existing_business.website = business.website
+                else:
+                    db_business = Business(
+                        places_id=business.places_id,
+                        name=business.name,
+                        address=business.address,
+                        phone=business.phone,
+                        website=business.website,
+                        category=business.business_type,
+                        geometry=from_shape(business.location, srid=4326),
+                        data_source="google_places",
+                        raw_metadata=business.raw_data,
+                    )
+                    db.add(db_business)
+                    db.flush()
+                
+                # Save parking lot to database
+                db_lot = ParkingLot(
+                    user_id=user_id,
+                    geometry=from_shape(found_lot.geometry, srid=4326) if found_lot.geometry else None,
+                    centroid=from_shape(found_lot.centroid, srid=4326),
+                    area_m2=found_lot.area_m2,
+                    area_sqft=found_lot.area_sqft,
+                    osm_id=found_lot.source_id if found_lot.source == "osm" else None,
+                    data_sources=[found_lot.source],
+                    operator_name=business.name,
+                    address=business.address,
+                    surface_type=found_lot.surface_type,
+                    raw_metadata=found_lot.raw_data,
+                    business_type_tier=business.tier.value,
+                    discovery_mode="business_first",
+                )
+                db.add(db_lot)
+                db.flush()
+                
+                parking_lot_ids.append(db_lot.id)
+                
+                # Create association
+                association = ParkingLotBusinessAssociation(
+                    parking_lot_id=db_lot.id,
+                    business_id=db_business.id,
+                    match_score=95.0,  # High score since we found business first
+                    distance_meters=0,  # Parking lot is for this business
+                    association_method="business_first",
+                    is_primary=True,
+                )
+                db.add(association)
+                
+                processed_count += 1
+                
+                # ============ Step 3: Fetch imagery and evaluate ============
+                polygon = found_lot.geometry
+                
+                logger.info(f"      🛰️  Fetching satellite image...")
+                image_bytes, storage_path, image_url = await imagery_service.fetch_imagery_for_parking_lot(
+                    db_lot.id,
+                    found_lot.centroid.y,
+                    found_lot.centroid.x,
+                    polygon,
+                    area_m2=found_lot.area_m2
+                )
+                
+                if image_bytes:
+                    logger.info(f"      ✅ Image fetched: {len(image_bytes)/1024:.1f} KB")
+                    
+                    # Update lot with imagery info
+                    db_lot.satellite_image_url = image_url
+                    db_lot.satellite_image_path = storage_path
+                    db_lot.image_captured_at = datetime.utcnow()
+                    
+                    # Evaluate condition
+                    logger.info(f"      🤖 Running CV analysis...")
+                    condition = await condition_evaluation_service.evaluate_condition(
+                        image_bytes,
+                        parking_lot_id=str(db_lot.id)
+                    )
+                    
+                    db_lot.condition_score = condition.get("condition_score")
+                    db_lot.crack_density = condition.get("crack_density")
+                    db_lot.pothole_score = condition.get("pothole_score")
+                    db_lot.line_fading_score = condition.get("line_fading_score")
+                    db_lot.degradation_areas = condition.get("degradation_areas")
+                    db_lot.is_evaluated = True
+                    db_lot.evaluated_at = datetime.utcnow()
+                    
+                    if condition.get("error"):
+                        db_lot.evaluation_error = condition["error"]
+                        logger.warning(f"      ⚠️  CV error: {condition['error']}")
+                    else:
+                        logger.info(f"      📊 Condition score: {db_lot.condition_score}/100")
+                    
+                    # Log CV usage
+                    usage_tracking_service.log_cv_evaluation(
+                        db=db,
+                        user_id=user_id,
+                        parking_lot_id=db_lot.id,
+                        job_id=job_id,
+                        bytes_processed=len(image_bytes),
+                        evaluation_time_seconds=condition.get("evaluation_time_seconds", 0),
+                        detections=condition.get("detection_count", 0),
+                    )
+                    
+                    evaluated_count += 1
+                else:
+                    logger.warning(f"      ❌ Failed to fetch imagery")
+                    db_lot.evaluation_error = "Failed to fetch imagery"
+                
+                db.commit()
+                self._jobs[job_key]["progress"].parking_lots_evaluated = evaluated_count
+                
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.3)
+                
+            except Exception as e:
+                logger.error(f"      ❌ Error processing business: {e}")
+                db.rollback()
+        
+        self._jobs[job_key]["progress"].parking_lots_found = processed_count
+        self._jobs[job_key]["progress"].associations_made = processed_count
+        
+        # ============ Step 4: Count high-value leads ============
+        logger.info("")
+        logger.info("🎯 STEP 4: Counting high-value leads...")
+        self._update_job(job_key, DiscoveryStep.FILTERING)
+        
+        high_value_count = self._count_high_value_leads(parking_lot_ids, filters, db)
+        self._jobs[job_key]["progress"].high_value_leads = high_value_count
+        
+        logger.info(f"   ✅ Found {high_value_count} high-value leads")
+        logger.info(f"      (condition_score <= {filters.max_condition_score})")
+        
+        # ============ Complete ============
+        self._update_job(job_key, DiscoveryStep.COMPLETED)
+        self._jobs[job_key]["completed_at"] = datetime.utcnow()
+        
+        elapsed = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"✅ BUSINESS-FIRST DISCOVERY COMPLETED")
+        logger.info(f"   Job ID: {job_id}")
+        logger.info(f"   Duration: {elapsed:.1f} seconds")
+        logger.info(f"   Businesses found: {len(discovered_businesses)}")
+        logger.info(f"   Parking lots processed: {processed_count}")
+        logger.info(f"   Parking lots evaluated: {evaluated_count}")
+        logger.info(f"   High-value leads: {high_value_count}")
+        logger.info(f"   By tier:")
+        logger.info(f"      🏆 Premium: {premium_count}")
+        logger.info(f"      ⭐ High: {high_count}")
+        logger.info(f"      📍 Standard: {standard_count}")
+        logger.info("=" * 60)
+        logger.info("")
+        
+        # Log usage
+        usage_tracking_service.log_discovery_job(
+            db=db,
+            user_id=user_id,
+            job_id=job_id,
+            parking_lots_found=processed_count,
+            parking_lots_evaluated=evaluated_count,
+            businesses_loaded=len(discovered_businesses),
+            metadata={
+                "high_value_leads": high_value_count,
+                "associations_made": processed_count,
+                "duration_seconds": elapsed,
+                "mode": "business_first",
+                "tiers": {
+                    "premium": premium_count,
+                    "high": high_count,
+                    "standard": standard_count,
+                },
             }
         )
     
@@ -241,13 +582,14 @@ class DiscoveryOrchestrator:
                 # Get polygon if available
                 polygon = to_shape(lot.geometry) if lot.geometry else None
                 
-                # Fetch imagery
+                # Fetch imagery using polygon bounds
                 logger.info(f"      🛰️  Fetching satellite image...")
                 image_bytes, storage_path, image_url = await imagery_service.fetch_imagery_for_parking_lot(
                     lot_id,
                     lat,
                     lng,
-                    polygon
+                    polygon,
+                    area_m2=float(lot.area_m2) if lot.area_m2 else None
                 )
                 
                 if image_bytes:

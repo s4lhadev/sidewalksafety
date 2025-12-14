@@ -13,7 +13,13 @@ import {
   TrendingDown,
   Clock,
   CheckCircle2,
-  Radar
+  Radar,
+  Building2,
+  AlertCircle,
+  Trophy,
+  Star,
+  Phone,
+  Globe
 } from 'lucide-react'
 
 export default function DashboardPage() {
@@ -35,16 +41,10 @@ export default function DashboardPage() {
   const { data: dealsData, isLoading } = useDeals(statusFilter)
   const deals = Array.isArray(dealsData) ? dealsData : []
   
+  // Always show all deals on map, not filtered by bounds
+  // This ensures markers stay visible when zooming or panning
   const { data: mapDealsData, isLoading: isLoadingMap } = useDealsForMap(
-    mapBounds
-      ? {
-          min_lat: mapBounds.minLat,
-          max_lat: mapBounds.maxLat,
-          min_lng: mapBounds.minLng,
-          max_lng: mapBounds.maxLng,
-          status: statusFilter,
-        }
-      : { status: statusFilter }
+    { status: statusFilter }
   )
   const mapDeals = Array.isArray(mapDealsData) ? mapDealsData : []
   
@@ -55,11 +55,13 @@ export default function DashboardPage() {
   const showMapLoading = isLoadingMap && !hasMapLoadedOnce.current
 
   const handleViewDetails = (dealId: string) => {
-    router.push(`/deals/${dealId}`)
+    router.push(`/parking-lots/${dealId}`)
   }
 
   const handleBoundsChange = useCallback(
     (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
+      // Store bounds but don't use them to filter deals
+      // This allows other features to use bounds if needed
       setMapBounds(bounds)
     },
     []
@@ -72,13 +74,14 @@ export default function DashboardPage() {
     setClickedLocation({ lat, lng })
   }, [])
 
-  const handleDiscover = (type: 'zip' | 'county', value: string, state?: string) => {
+  const handleDiscover = (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => {
     scrapeDeals.mutate(
       {
         area_type: type,
         value,
         state: type === 'county' ? state : undefined,
         max_deals: type === 'zip' ? 10 : 30,
+        business_type_ids: businessTypeIds,
       },
       {
         onSuccess: () => {
@@ -218,10 +221,16 @@ export default function DashboardPage() {
             {/* Summary Footer */}
             {deals.length > 0 && (
               <div className="p-4 border-t border-slate-100 bg-slate-50/80">
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="grid grid-cols-4 gap-2 text-center">
                   <div>
                     <p className="text-lg font-bold text-slate-900">{deals.length}</p>
                     <p className="text-[10px] text-slate-500 uppercase tracking-wide">Total</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-blue-500">
+                      {deals.filter((d: any) => d.has_business || d.business).length}
+                    </p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">W/ Business</p>
                   </div>
                   <div>
                     <p className="text-lg font-bold text-red-500">
@@ -297,7 +306,30 @@ function DealCard({
     return 'text-green-500'
   }
 
+  const getTierBadge = (tier: string | undefined) => {
+    switch (tier) {
+      case 'premium':
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-800 flex items-center gap-1">
+            <Trophy className="h-2.5 w-2.5" />
+            Premium
+          </span>
+        )
+      case 'high':
+        return (
+          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-800 flex items-center gap-1">
+            <Star className="h-2.5 w-2.5" />
+            High
+          </span>
+        )
+      default:
+        return null
+    }
+  }
+
   const isHighPriority = deal.score !== null && deal.score !== undefined && deal.score < 50
+  const hasBusiness = deal.has_business || deal.business
+  const tier = deal.business_type_tier
 
   return (
     <div
@@ -309,6 +341,8 @@ function DealCard({
           : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
         }
         ${isHighPriority ? 'ring-1 ring-red-200' : ''}
+        ${tier === 'premium' ? 'border-l-2 border-l-amber-400' : ''}
+        ${tier === 'high' ? 'border-l-2 border-l-purple-400' : ''}
       `}
     >
       <div className="flex items-start gap-3">
@@ -325,9 +359,12 @@ function DealCard({
 
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-1">
-            <h3 className="font-medium text-sm text-slate-900 line-clamp-1 leading-tight">
-              {deal.business_name || deal.address}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-medium text-sm text-slate-900 line-clamp-1 leading-tight">
+                {deal.business_name || deal.address}
+              </h3>
+              {getTierBadge(tier)}
+            </div>
             {deal.score !== null && deal.score !== undefined && (
               <span className={`text-sm font-bold flex-shrink-0 ${getScoreColor(deal.score)}`}>
                 {Math.round(deal.score)}%
@@ -338,6 +375,35 @@ function DealCard({
           {deal.address && deal.business_name && (
             <p className="text-xs text-slate-500 mb-1.5 line-clamp-1">{deal.address}</p>
           )}
+
+          {/* Business Association Badge */}
+          <div className="flex items-center gap-1.5 flex-wrap mb-2">
+            {hasBusiness ? (
+              <>
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-50 text-blue-700 flex items-center gap-1">
+                  <Building2 className="h-2.5 w-2.5" />
+                  {deal.business?.category || 'Business'}
+                </span>
+                {deal.business?.phone && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-green-50 text-green-700 flex items-center gap-1">
+                    <Phone className="h-2.5 w-2.5" />
+                    Has Phone
+                  </span>
+                )}
+                {deal.business?.website && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-50 text-cyan-700 flex items-center gap-1">
+                    <Globe className="h-2.5 w-2.5" />
+                    Website
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700 flex items-center gap-1">
+                <AlertCircle className="h-2.5 w-2.5" />
+                No Business Data
+              </span>
+            )}
+          </div>
 
           {/* Score Bar */}
           {deal.score !== null && deal.score !== undefined && (

@@ -1,7 +1,21 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Loader2, MapPin, CheckCircle2, AlertCircle, Hash, Map as MapIcon } from 'lucide-react'
+import { 
+  X, 
+  Loader2, 
+  MapPin, 
+  CheckCircle2, 
+  AlertCircle, 
+  Hash, 
+  Map as MapIcon,
+  Trophy,
+  Star,
+  ChevronDown,
+  ChevronUp,
+  Building2,
+  Settings2
+} from 'lucide-react'
 
 interface LocationInfo {
   zip?: string
@@ -10,19 +24,82 @@ interface LocationInfo {
   state?: string
 }
 
+interface BusinessType {
+  id: string
+  label: string
+  queries: string[]
+}
+
+interface Tier {
+  id: string
+  label: string
+  icon: string
+  description: string
+  types: BusinessType[]
+}
+
 interface DiscoveryCardProps {
   lat: number
   lng: number
-  onDiscover: (type: 'zip' | 'county', value: string, state?: string) => void
+  onDiscover: (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => void
   onClose: () => void
   isDiscovering: boolean
 }
+
+// Business type options (matches backend)
+const BUSINESS_TIERS: Tier[] = [
+  {
+    id: 'premium',
+    label: 'Premium',
+    icon: 'trophy',
+    description: 'HOAs, apartments - high success rate',
+    types: [
+      { id: 'hoa', label: 'HOA / Homeowner Associations', queries: [] },
+      { id: 'apartments', label: 'Apartment Complexes', queries: [] },
+      { id: 'property_mgmt', label: 'Property Management', queries: [] },
+      { id: 'condos', label: 'Condo Associations', queries: [] },
+      { id: 'townhomes', label: 'Townhome Communities', queries: [] },
+    ],
+  },
+  {
+    id: 'high',
+    label: 'High Priority',
+    icon: 'star',
+    description: 'Commercial with large parking',
+    types: [
+      { id: 'shopping', label: 'Shopping Centers / Malls', queries: [] },
+      { id: 'hotels', label: 'Hotels / Motels', queries: [] },
+      { id: 'offices', label: 'Office Parks / Buildings', queries: [] },
+      { id: 'warehouses', label: 'Warehouses / Distribution', queries: [] },
+    ],
+  },
+  {
+    id: 'standard',
+    label: 'Standard',
+    icon: 'map-pin',
+    description: 'Other businesses',
+    types: [
+      { id: 'churches', label: 'Churches', queries: [] },
+      { id: 'schools', label: 'Schools', queries: [] },
+      { id: 'hospitals', label: 'Hospitals / Medical', queries: [] },
+      { id: 'gyms', label: 'Gyms / Fitness', queries: [] },
+      { id: 'grocery', label: 'Grocery Stores', queries: [] },
+      { id: 'car_dealers', label: 'Car Dealerships', queries: [] },
+    ],
+  },
+]
+
+// Default selected types (premium tier)
+const DEFAULT_SELECTED = ['hoa', 'apartments', 'condos', 'townhomes', 'property_mgmt']
 
 export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: DiscoveryCardProps) {
   const [locationInfo, setLocationInfo] = useState<LocationInfo | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<'zip' | 'county' | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set(DEFAULT_SELECTED))
+  const [expandedTiers, setExpandedTiers] = useState<Set<string>>(new Set(['premium']))
 
   useEffect(() => {
     const geocode = async () => {
@@ -83,16 +160,69 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
   const handleConfirm = () => {
     if (!pendingAction || !locationInfo) return
     
+    const typeIds = Array.from(selectedTypes)
+    
     if (pendingAction === 'zip' && locationInfo.zip) {
-      onDiscover('zip', locationInfo.zip)
+      onDiscover('zip', locationInfo.zip, undefined, typeIds.length > 0 ? typeIds : undefined)
     } else if (pendingAction === 'county' && locationInfo.county && locationInfo.state) {
-      onDiscover('county', locationInfo.county, locationInfo.state)
+      onDiscover('county', locationInfo.county, locationInfo.state, typeIds.length > 0 ? typeIds : undefined)
     }
   }
 
   const handleCancel = () => {
     setPendingAction(null)
+    setShowAdvanced(false)
   }
+
+  const toggleType = (typeId: string) => {
+    const newSelected = new Set(selectedTypes)
+    if (newSelected.has(typeId)) {
+      newSelected.delete(typeId)
+    } else {
+      newSelected.add(typeId)
+    }
+    setSelectedTypes(newSelected)
+  }
+
+  const toggleTier = (tierId: string) => {
+    const tier = BUSINESS_TIERS.find(t => t.id === tierId)
+    if (!tier) return
+    
+    const tierTypeIds = tier.types.map(t => t.id)
+    const allSelected = tierTypeIds.every(id => selectedTypes.has(id))
+    
+    const newSelected = new Set(selectedTypes)
+    if (allSelected) {
+      tierTypeIds.forEach(id => newSelected.delete(id))
+    } else {
+      tierTypeIds.forEach(id => newSelected.add(id))
+    }
+    setSelectedTypes(newSelected)
+  }
+
+  const toggleTierExpand = (tierId: string) => {
+    const newExpanded = new Set(expandedTiers)
+    if (newExpanded.has(tierId)) {
+      newExpanded.delete(tierId)
+    } else {
+      newExpanded.add(tierId)
+    }
+    setExpandedTiers(newExpanded)
+  }
+
+  const getTierIcon = (iconName: string) => {
+    switch (iconName) {
+      case 'trophy': return <Trophy className="h-4 w-4" />
+      case 'star': return <Star className="h-4 w-4" />
+      default: return <MapPin className="h-4 w-4" />
+    }
+  }
+
+  const getTierSelectedCount = (tier: Tier) => {
+    return tier.types.filter(t => selectedTypes.has(t.id)).length
+  }
+
+  const totalSelected = selectedTypes.size
 
   return (
     <div className="bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden w-80 animate-slide-in">
@@ -123,7 +253,7 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
           </div>
         ) : locationInfo ? (
           <div className="space-y-4">
-            {/* Location Display - Elegant */}
+            {/* Location Display */}
             <div className="text-center pb-3 border-b border-slate-100">
               {locationInfo.city && (
                 <p className="text-base font-semibold text-slate-900">
@@ -147,27 +277,121 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
               )}
             </div>
 
-            {/* Confirmation State */}
+            {/* Confirmation State with Business Type Selection */}
             {pendingAction ? (
               <div className="space-y-3">
+                {/* Summary */}
                 <div className="flex items-start gap-3 p-3 bg-orange-50 rounded-lg border border-orange-200">
-                  <AlertCircle className="h-5 w-5 text-orange-600 flex-shrink-0 mt-0.5" />
+                  <Building2 className="h-5 w-5 text-orange-600 flex-shrink-0 mt-0.5" />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-slate-900 mb-1">
-                      Confirm Discovery
-                    </p>
-                    <p className="text-xs text-slate-600">
                       {pendingAction === 'zip' 
-                        ? `Discover parking lots in ZIP code ${locationInfo.zip}?`
-                        : `Discover parking lots in ${locationInfo.county} County?`
+                        ? `ZIP ${locationInfo.zip}`
+                        : `${locationInfo.county} County`
                       }
                     </p>
-                    <p className="text-xs text-slate-500 mt-1.5">
-                      This will start discovering parking lots in the selected area
+                    <p className="text-xs text-slate-600">
+                      {totalSelected} business type{totalSelected !== 1 ? 's' : ''} selected
                     </p>
                   </div>
                 </div>
 
+                {/* Business Type Selection */}
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors text-sm"
+                  >
+                    <div className="flex items-center gap-2 text-slate-700">
+                      <Settings2 className="h-4 w-4" />
+                      <span className="font-medium">Business Types</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">{totalSelected} selected</span>
+                      {showAdvanced ? (
+                        <ChevronUp className="h-4 w-4 text-slate-400" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-slate-400" />
+                      )}
+                    </div>
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="max-h-64 overflow-y-auto space-y-2 border border-slate-200 rounded-lg p-2">
+                      {BUSINESS_TIERS.map((tier) => {
+                        const tierCount = getTierSelectedCount(tier)
+                        const allSelected = tierCount === tier.types.length
+                        const isExpanded = expandedTiers.has(tier.id)
+                        
+                        return (
+                          <div key={tier.id} className="border border-slate-100 rounded-lg overflow-hidden">
+                            {/* Tier Header */}
+                            <div 
+                              className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50 ${
+                                tier.id === 'premium' ? 'bg-amber-50' : 
+                                tier.id === 'high' ? 'bg-purple-50' : 'bg-slate-50'
+                              }`}
+                            >
+                              <button
+                                onClick={() => toggleTier(tier.id)}
+                                className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center ${
+                                  allSelected 
+                                    ? 'bg-orange-500 border-orange-500 text-white' 
+                                    : tierCount > 0
+                                    ? 'bg-orange-200 border-orange-300'
+                                    : 'border-slate-300'
+                                }`}
+                              >
+                                {allSelected && <CheckCircle2 className="h-3 w-3" />}
+                              </button>
+                              
+                              <div className="flex-1 flex items-center gap-2" onClick={() => toggleTierExpand(tier.id)}>
+                                <span className={`${
+                                  tier.id === 'premium' ? 'text-amber-600' : 
+                                  tier.id === 'high' ? 'text-purple-600' : 'text-slate-600'
+                                }`}>
+                                  {getTierIcon(tier.icon)}
+                                </span>
+                                <span className="text-xs font-medium text-slate-700">{tier.label}</span>
+                                <span className="text-[10px] text-slate-400">({tierCount}/{tier.types.length})</span>
+                              </div>
+                              
+                              <button onClick={() => toggleTierExpand(tier.id)}>
+                                {isExpanded ? (
+                                  <ChevronUp className="h-4 w-4 text-slate-400" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-slate-400" />
+                                )}
+                              </button>
+                            </div>
+                            
+                            {/* Tier Types */}
+                            {isExpanded && (
+                              <div className="px-3 py-2 space-y-1 bg-white">
+                                {tier.types.map((type) => (
+                                  <label 
+                                    key={type.id}
+                                    className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1 rounded"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedTypes.has(type.id)}
+                                      onChange={() => toggleType(type.id)}
+                                      className="w-3.5 h-3.5 rounded border-slate-300 text-orange-500 focus:ring-orange-500"
+                                    />
+                                    <span className="text-xs text-slate-600">{type.label}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons */}
                 <div className="flex gap-2">
                   <button
                     onClick={handleCancel}
@@ -177,7 +401,7 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
                   </button>
                   <button
                     onClick={handleConfirm}
-                    disabled={isDiscovering}
+                    disabled={isDiscovering || totalSelected === 0}
                     className="flex-1 px-3 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-all disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-1.5"
                   >
                     {isDiscovering ? (
@@ -188,14 +412,14 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
                     ) : (
                       <>
                         <CheckCircle2 className="h-4 w-4" />
-                        Confirm
+                        Discover
                       </>
                     )}
                   </button>
                 </div>
               </div>
             ) : (
-              /* Action Buttons */
+              /* Initial Action Buttons */
               <div className="flex gap-2">
                 {locationInfo.zip && (
                   <button

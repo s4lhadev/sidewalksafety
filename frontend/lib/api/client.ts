@@ -18,11 +18,15 @@ apiClient.interceptors.request.use(
       delete config.headers['Content-Type']
     }
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null
-    const isAuthEndpoint = config.url?.includes('/auth/')
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('auth_token')
+      const isAuthEndpoint = config.url?.includes('/auth/')
 
-    if (!isAuthEndpoint && token) {
-      config.headers.Authorization = `Bearer ${token}`
+      // Always attach token if it exists - let the backend validate it
+      // Don't check expiration here as auth provider handles session restoration
+      if (!isAuthEndpoint && token) {
+        config.headers.Authorization = `Bearer ${token}`
+      }
     }
 
     return config
@@ -37,8 +41,24 @@ apiClient.interceptors.response.use(
   (error: AxiosError<ApiError>) => {
     if (error.response?.status === 401) {
       if (typeof window !== 'undefined') {
+        const isAuthEndpoint = error.config?.url?.includes('/auth/')
+        
+        // Don't clear auth data or redirect for /auth/me during initialization
+        // The auth provider handles session restoration, and clearing here causes logout on reload
+        if (isAuthEndpoint && error.config?.url?.includes('/auth/me')) {
+          // Just reject the error, don't clear localStorage
+          return Promise.reject(error)
+        }
+        
+        // For other 401s, clear auth data and redirect
         localStorage.removeItem('auth_token')
-        window.location.href = '/login'
+        localStorage.removeItem('auth_user')
+        localStorage.removeItem('auth_token_expiry')
+        
+        // Only redirect if not already on auth endpoint
+        if (!isAuthEndpoint) {
+          window.location.href = '/login'
+        }
       }
     }
 

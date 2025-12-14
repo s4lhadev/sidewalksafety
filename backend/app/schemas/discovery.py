@@ -11,6 +11,45 @@ class AreaType(str, Enum):
     POLYGON = "polygon"
 
 
+class DiscoveryMode(str, Enum):
+    """Discovery pipeline mode."""
+    BUSINESS_FIRST = "business_first"  # Find businesses → parking lots (recommended)
+    PARKING_FIRST = "parking_first"    # Find parking lots → businesses (legacy)
+
+
+class BusinessTierEnum(str, Enum):
+    """Business priority tiers."""
+    PREMIUM = "premium"
+    HIGH = "high"
+    STANDARD = "standard"
+
+
+# Available business types by tier (for frontend display)
+BUSINESS_TYPE_OPTIONS = {
+    "premium": [
+        {"id": "hoa", "label": "Homeowner Associations (HOA)", "queries": ["homeowner association", "HOA"]},
+        {"id": "apartments", "label": "Apartment Complexes", "queries": ["apartment complex", "apartments for rent"]},
+        {"id": "property_mgmt", "label": "Property Management", "queries": ["property management company"]},
+        {"id": "condos", "label": "Condo Associations", "queries": ["condo association", "condominium"]},
+        {"id": "townhomes", "label": "Townhome Communities", "queries": ["townhome community", "residential complex"]},
+    ],
+    "high": [
+        {"id": "shopping", "label": "Shopping Centers / Malls", "queries": ["shopping center", "shopping mall", "retail plaza"]},
+        {"id": "hotels", "label": "Hotels / Motels", "queries": ["hotel", "motel"]},
+        {"id": "offices", "label": "Office Parks / Buildings", "queries": ["office park", "office building"]},
+        {"id": "warehouses", "label": "Warehouses / Distribution", "queries": ["warehouse", "distribution center", "industrial park"]},
+    ],
+    "standard": [
+        {"id": "churches", "label": "Churches", "queries": ["church"]},
+        {"id": "schools", "label": "Schools", "queries": ["school"]},
+        {"id": "hospitals", "label": "Hospitals / Medical", "queries": ["hospital", "medical center"]},
+        {"id": "gyms", "label": "Gyms / Fitness", "queries": ["gym", "fitness center"]},
+        {"id": "grocery", "label": "Grocery Stores", "queries": ["grocery store", "supermarket"]},
+        {"id": "car_dealers", "label": "Car Dealerships", "queries": ["car dealership"]},
+    ],
+}
+
+
 class GeoJSONPolygon(BaseModel):
     type: str = "Polygon"
     coordinates: List[List[List[float]]]
@@ -32,6 +71,19 @@ class DiscoveryRequest(BaseModel):
     state: Optional[str] = Field(None, description="Required if area_type is 'county'")
     polygon: Optional[GeoJSONPolygon] = Field(None, description="Required if area_type is 'polygon'")
     filters: Optional[DiscoveryFilters] = None
+    mode: DiscoveryMode = Field(
+        default=DiscoveryMode.BUSINESS_FIRST,
+        description="Discovery mode: 'business_first' (recommended) finds businesses then parking lots, 'parking_first' finds parking lots then businesses"
+    )
+    # Business type selection (for business_first mode)
+    tiers: Optional[List[BusinessTierEnum]] = Field(
+        default=None,
+        description="Tiers to search: 'premium', 'high', 'standard'. If None, searches all tiers."
+    )
+    business_type_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Specific business type IDs to search (e.g., 'hoa', 'apartments'). If None, searches all types in selected tiers."
+    )
 
 
 # ============ Discovery Job Status ============

@@ -48,6 +48,21 @@ class ParkingLotCondition(BaseModel):
     degradation_areas: Optional[List[Dict[str, Any]]] = None
 
 
+# ============ Business Summary (for embedding) ============
+
+class BusinessSummary(BaseModel):
+    id: UUID
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    category: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ParkingLotResponse(ParkingLotBase):
     id: UUID
     centroid: Coordinates
@@ -66,6 +81,10 @@ class ParkingLotResponse(ParkingLotBase):
     is_evaluated: bool
     data_sources: List[str]
     
+    # Business-first discovery fields
+    business_type_tier: Optional[str] = None  # "premium", "high", "standard"
+    discovery_mode: Optional[str] = None  # "business_first", "parking_first"
+    
     # Timestamps
     created_at: datetime
     evaluated_at: Optional[datetime] = None
@@ -79,6 +98,9 @@ class ParkingLotDetailResponse(ParkingLotResponse):
     raw_metadata: Optional[Dict[str, Any]] = None
     evaluation_error: Optional[str] = None
     updated_at: Optional[datetime] = None
+    business: Optional[BusinessSummary] = None
+    match_score: Optional[float] = None
+    distance_meters: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -93,6 +115,8 @@ class ParkingLotMapResponse(BaseModel):
     is_evaluated: bool
     has_business: bool
     business_name: Optional[str] = None
+    business_type_tier: Optional[str] = None  # "premium", "high", "standard"
+    business: Optional[BusinessSummary] = None
 
     class Config:
         from_attributes = True
@@ -100,24 +124,9 @@ class ParkingLotMapResponse(BaseModel):
 
 class ParkingLotWithBusiness(ParkingLotResponse):
     """Parking lot with associated business info."""
-    business: Optional["BusinessSummary"] = None
+    business: Optional[BusinessSummary] = None
     match_score: Optional[float] = None
     distance_meters: Optional[float] = None
-
-    class Config:
-        from_attributes = True
-
-
-# ============ Business Summary (for embedding) ============
-
-class BusinessSummary(BaseModel):
-    id: UUID
-    name: str
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    website: Optional[str] = None
-    address: Optional[str] = None
-    category: Optional[str] = None
 
     class Config:
         from_attributes = True
