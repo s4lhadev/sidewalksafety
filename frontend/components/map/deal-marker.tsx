@@ -15,22 +15,31 @@ interface DealMarkerProps {
 }
 
 function getMarkerColor(deal: DealMapResponse): string {
+  // Inverted logic: Bad condition (low score) = Green (opportunity!)
+  if (deal.score !== null && deal.score !== undefined) {
+    if (deal.score <= 30) return '#10B981' // green - critical opportunity
+    if (deal.score <= 50) return '#84CC16' // lime - good opportunity
+    if (deal.score <= 70) return '#F59E0B' // amber - fair
+    return '#EF4444' // red - good condition (not interesting)
+  }
+  
+  // Legacy deal_score (inverted)
   if (deal.deal_score !== null && deal.deal_score !== undefined) {
-    if (deal.deal_score >= 7) return '#10B981' // green
-    if (deal.deal_score >= 4) return '#F59E0B' // yellow
-    return '#EF4444' // red
+    if (deal.deal_score < 4) return '#10B981' // green - bad = opportunity
+    if (deal.deal_score < 7) return '#F59E0B' // yellow
+    return '#EF4444' // red - good = skip
   }
   
   if (deal.damage_severity) {
     switch (deal.damage_severity) {
       case 'critical':
-        return '#EF4444'
+        return '#10B981' // green - opportunity!
       case 'high':
-        return '#F97316'
+        return '#84CC16' // lime - opportunity
       case 'medium':
-        return '#F59E0B'
+        return '#F59E0B' // amber
       case 'low':
-        return '#10B981'
+        return '#EF4444' // red - skip
     }
   }
 
@@ -107,19 +116,20 @@ export function DealMarker({ deal, position, isSelected, onClick }: DealMarkerPr
             {/* Marker Dot */}
             <div
               className={cn(
-                'relative rounded-full shadow-lg transition-all duration-200',
-                'group-hover:scale-110 group-hover:shadow-xl',
-                isSelected && 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                'relative rounded-full shadow-md transition-all duration-200 border-2 border-white',
+                'group-hover:scale-125 group-hover:shadow-lg',
+                isSelected && 'ring-2 ring-offset-1 ring-offset-white'
               )}
               style={{
-                width: isSelected ? '20px' : '16px',
-                height: isSelected ? '20px' : '16px',
+                width: isSelected ? '18px' : '14px',
+                height: isSelected ? '18px' : '14px',
                 backgroundColor: markerColor,
+                boxShadow: isSelected ? `0 0 0 2px ${markerColor}40` : undefined,
               }}
             >
               {isSelected && (
                 <div
-                  className="absolute inset-0 rounded-full animate-ping opacity-75"
+                  className="absolute inset-0 rounded-full animate-ping opacity-50"
                   style={{ backgroundColor: markerColor }}
                 />
               )}
@@ -128,17 +138,18 @@ export function DealMarker({ deal, position, isSelected, onClick }: DealMarkerPr
             {/* Deal Name Badge */}
             <div
               className={cn(
-                'bg-card/95 backdrop-blur-sm border border-border/40 rounded-md px-2 py-1',
-                'shadow-lg max-w-[140px] transition-all duration-200',
-                isSelected && 'bg-primary/10 border-primary/40'
+                'bg-card/98 backdrop-blur-md border border-border/50 rounded-lg px-2.5 py-1.5',
+                'shadow-xl max-w-[160px] transition-all duration-200',
+                'opacity-0 group-hover:opacity-100',
+                isSelected && 'opacity-100 bg-card border-border'
               )}
             >
-              <p className="text-[11px] font-medium text-foreground truncate text-center">
-                {deal.business_name}
+              <p className="text-xs font-semibold text-foreground truncate text-center">
+                {deal.business_name || deal.address || 'Parking Lot'}
               </p>
-              {deal.deal_score !== null && deal.deal_score !== undefined && (
-                <p className="text-[10px] text-muted-foreground text-center mt-0.5">
-                  Score: {deal.deal_score.toFixed(1)}
+              {deal.score !== null && deal.score !== undefined && (
+                <p className="text-[10px] text-muted-foreground text-center mt-0.5 tabular-nums">
+                  {Math.round(deal.score)}
                 </p>
               )}
             </div>

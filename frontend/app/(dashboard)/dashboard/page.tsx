@@ -1,451 +1,408 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { useDeals, useDealsForMap, useScrapeDeals } from '@/lib/queries/use-deals'
 import { InteractiveMap } from '@/components/map/interactive-map'
 import { DiscoveryCard } from '@/components/map/discovery-card'
 import { DealMapResponse } from '@/types'
 import { useRouter } from 'next/navigation'
+import { cn } from '@/lib/utils'
+import { Chip, ChipGroup, StatusChip } from '@/components/ui'
 import { 
-  X,
+  ChevronLeft,
   ChevronRight,
   MapPin,
-  TrendingDown,
   Clock,
   CheckCircle2,
-  Radar,
   Building2,
-  AlertCircle,
-  Trophy,
-  Star,
-  Phone,
-  Globe
+  ExternalLink,
+  Target,
+  Layers,
+  AlertTriangle,
+  Circle
 } from 'lucide-react'
+
+type ScoreFilter = 'all' | 'lead' | 'critical' | 'poor' | 'fair' | 'good'
 
 export default function DashboardPage() {
   const router = useRouter()
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
+  const [scoreFilter, setScoreFilter] = useState<ScoreFilter>('all')
   const [selectedDeal, setSelectedDeal] = useState<DealMapResponse | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [panelOpen, setPanelOpen] = useState(true)
   const [clickedLocation, setClickedLocation] = useState<{ lat: number; lng: number } | null>(null)
-  const [mapBounds, setMapBounds] = useState<{
-    minLat: number
-    maxLat: number
-    minLng: number
-    maxLng: number
-  } | null>(null)
 
   const hasMapLoadedOnce = useRef(false)
   const scrapeDeals = useScrapeDeals()
 
   const { data: dealsData, isLoading } = useDeals(statusFilter)
-  const deals = Array.isArray(dealsData) ? dealsData : []
+  const allDeals = Array.isArray(dealsData) ? dealsData : []
   
-  // Always show all deals on map, not filtered by bounds
-  // This ensures markers stay visible when zooming or panning
-  const { data: mapDealsData, isLoading: isLoadingMap } = useDealsForMap(
-    { status: statusFilter }
-  )
+  // Apply score filter
+  const deals = useMemo(() => {
+    let filtered = allDeals
+    
+    if (scoreFilter === 'all') return filtered
+    
+    return filtered.filter(d => {
+      if (d.score === null || d.score === undefined) return false
+      switch (scoreFilter) {
+        case 'lead': return d.score < 50
+        case 'critical': return d.score <= 30
+        case 'poor': return d.score > 30 && d.score <= 50
+        case 'fair': return d.score > 50 && d.score <= 70
+        case 'good': return d.score > 70
+        default: return true
+      }
+    })
+  }, [allDeals, scoreFilter])
+  
+  const { data: mapDealsData, isLoading: isLoadingMap } = useDealsForMap({ status: statusFilter })
   const mapDeals = Array.isArray(mapDealsData) ? mapDealsData : []
   
-  if (mapDealsData && !hasMapLoadedOnce.current) {
-    hasMapLoadedOnce.current = true
-  }
-  
+  if (mapDealsData && !hasMapLoadedOnce.current) hasMapLoadedOnce.current = true
   const showMapLoading = isLoadingMap && !hasMapLoadedOnce.current
 
-  const handleViewDetails = (dealId: string) => {
-    router.push(`/parking-lots/${dealId}`)
-  }
-
-  const handleBoundsChange = useCallback(
-    (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
-      // Store bounds but don't use them to filter deals
-      // This allows other features to use bounds if needed
-      setMapBounds(bounds)
-    },
-    []
-  )
-
+  const handleViewDetails = (dealId: string) => router.push(`/parking-lots/${dealId}`)
+  
   const handleMapClick = useCallback((lat: number, lng: number) => {
-    // Close deal selection if open
     setSelectedDeal(null)
-    // Open discovery card
     setClickedLocation({ lat, lng })
   }, [])
 
   const handleDiscover = (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => {
-    scrapeDeals.mutate(
-      {
-        area_type: type,
-        value,
-        state: type === 'county' ? state : undefined,
-        max_deals: type === 'zip' ? 10 : 30,
-        business_type_ids: businessTypeIds,
-      },
-      {
-        onSuccess: () => {
-          setClickedLocation(null)
-          // Keep boundary visible during discovery
-        },
-      }
-    )
+    scrapeDeals.mutate({
+      area_type: type, value,
+      state: type === 'county' ? state : undefined,
+      max_deals: type === 'zip' ? 10 : 30,
+      business_type_ids: businessTypeIds,
+    }, { onSuccess: () => setClickedLocation(null) })
   }
 
-  const statusTabs = [
-    { value: undefined, label: 'All', icon: Radar },
-    { value: 'pending', label: 'Pending', icon: Clock },
-    { value: 'evaluated', label: 'Analyzed', icon: CheckCircle2 },
-  ]
+  const counts = {
+    all: allDeals.length,
+    pending: allDeals.filter(d => d.status === 'pending').length,
+    analyzed: allDeals.filter(d => d.status === 'evaluated').length,
+    leads: allDeals.filter(d => d.score !== null && d.score !== undefined && d.score < 50).length,
+  }
 
-  const getStatusCount = (status?: string) => {
-    if (!status) return deals.length
-    return deals.filter(d => d.status === status).length
+  // Helper to get score color (inverted: bad = green opportunity)
+  const getScoreColor = (score: number | null | undefined) => {
+    if (score === null || score === undefined) {
+      return { bg: 'bg-muted', text: 'text-muted-foreground' }
+    }
+    // Inverted logic: Low score (bad condition) = Green (opportunity!)
+    if (score <= 30) return { bg: 'bg-emerald-100 dark:bg-emerald-950', text: 'text-emerald-700 dark:text-emerald-400' }
+    if (score <= 50) return { bg: 'bg-lime-100 dark:bg-lime-950', text: 'text-lime-700 dark:text-lime-400' }
+    if (score <= 70) return { bg: 'bg-amber-100 dark:bg-amber-950', text: 'text-amber-700 dark:text-amber-400' }
+    // High score (good condition) = Red/Muted (not interesting)
+    return { bg: 'bg-red-100 dark:bg-red-950', text: 'text-red-700 dark:text-red-400' }
   }
 
   return (
-    <div className="relative h-full">
-      {/* Full-screen Map */}
-      <div className="absolute inset-0">
+    <div className="h-full flex">
+      {/* Side Panel */}
+      <div className={cn(
+        'h-full bg-card border-r border-border flex flex-col transition-all duration-200',
+        panelOpen ? 'w-80' : 'w-0'
+      )}>
+        {panelOpen && (
+          <>
+            {/* Panel Header */}
+            <div className="flex-shrink-0 p-3 border-b border-border space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-semibold">Parking Lots</span>
+                  <span className="text-xs text-muted-foreground">({counts.all})</span>
+                </div>
+                <button 
+                  onClick={() => setPanelOpen(false)}
+                  className="p-1 rounded hover:bg-muted transition-colors"
+                >
+                  <ChevronLeft className="h-4 w-4 text-muted-foreground" />
+                </button>
+              </div>
+
+              {/* Status Filter Chips */}
+              <ChipGroup>
+                <Chip 
+                  active={!statusFilter} 
+                  onClick={() => setStatusFilter(undefined)}
+                  count={counts.all}
+                  icon={Circle}
+                >
+                  All
+                </Chip>
+                <Chip 
+                  active={statusFilter === 'pending'} 
+                  onClick={() => setStatusFilter('pending')}
+                  count={counts.pending}
+                  icon={Clock}
+                >
+                  Pending
+                </Chip>
+                <Chip 
+                  active={statusFilter === 'evaluated'} 
+                  onClick={() => setStatusFilter('evaluated')}
+                  count={counts.analyzed}
+                  icon={CheckCircle2}
+                >
+                  Analyzed
+                </Chip>
+              </ChipGroup>
+
+              {/* Score Filter - Clickable Segmented Bar */}
+              <div className="pt-2 border-t border-border space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Condition</span>
+                  {scoreFilter !== 'all' && (
+                    <button 
+                      onClick={() => setScoreFilter('all')}
+                      className="text-[10px] text-muted-foreground hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                
+                {/* Clickable Segmented Bar */}
+                <div className="flex h-6 rounded-md overflow-hidden border border-border">
+                  <SegmentButton 
+                    active={scoreFilter === 'critical'}
+                    onClick={() => setScoreFilter(scoreFilter === 'critical' ? 'all' : 'critical')}
+                    color="bg-emerald-500"
+                    label="Critical"
+                    flex={30}
+                  />
+                  <SegmentButton 
+                    active={scoreFilter === 'poor'}
+                    onClick={() => setScoreFilter(scoreFilter === 'poor' ? 'all' : 'poor')}
+                    color="bg-lime-500"
+                    label="Poor"
+                    flex={20}
+                  />
+                  <SegmentButton 
+                    active={scoreFilter === 'fair'}
+                    onClick={() => setScoreFilter(scoreFilter === 'fair' ? 'all' : 'fair')}
+                    color="bg-amber-500"
+                    label="Fair"
+                    flex={20}
+                  />
+                  <SegmentButton 
+                    active={scoreFilter === 'good'}
+                    onClick={() => setScoreFilter(scoreFilter === 'good' ? 'all' : 'good')}
+                    color="bg-red-400"
+                    label="Good"
+                    flex={30}
+                  />
+                </div>
+
+                {/* Lead Quick Filter */}
+                {counts.leads > 0 && (
+                  <button
+                    onClick={() => setScoreFilter(scoreFilter === 'lead' ? 'all' : 'lead')}
+                    className={cn(
+                      'w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-all',
+                      scoreFilter === 'lead'
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-500/30'
+                        : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Target className="h-3 w-3" />
+                      All Leads
+                    </span>
+                    <span className="tabular-nums">{counts.leads}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto">
+              {isLoading ? (
+                <div className="p-3 space-y-2">
+                  {[...Array(5)].map((_, i) => (
+                    <div key={i} className="h-20 bg-muted/50 rounded-lg animate-pulse" />
+                  ))}
+                </div>
+              ) : deals.length > 0 ? (
+                <div className="divide-y divide-border">
+                  {deals.map((deal) => (
+                    <ParkingLotItem
+                      key={deal.id}
+                      deal={deal}
+                      isSelected={selectedDeal?.id === deal.id}
+                      onClick={() => { setSelectedDeal(deal as any); setClickedLocation(null) }}
+                      onViewDetails={() => handleViewDetails(deal.id)}
+                      getScoreColor={getScoreColor}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                  <div className="w-14 h-14 rounded-xl border-2 border-dashed border-border flex items-center justify-center mb-3">
+                    <MapPin className="h-6 w-6 text-muted-foreground/30" strokeWidth={1.5} />
+                  </div>
+                  <p className="text-sm font-medium">No parking lots found</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {scoreFilter !== 'all' ? 'Try adjusting filters' : 'Click on the map to discover'}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Stats Footer */}
+            {allDeals.length > 0 && (
+              <div className="flex-shrink-0 p-3 border-t border-border bg-muted/20">
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <StatItem label="Analyzed" value={counts.analyzed} color="text-muted-foreground" />
+                  <StatItem label="Leads" value={counts.leads} color="text-emerald-600 dark:text-emerald-400" />
+                  <StatItem label="Pending" value={counts.pending} color="text-amber-500" />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Toggle Button */}
+      {!panelOpen && (
+        <button
+          onClick={() => setPanelOpen(true)}
+          className="absolute top-16 left-0 z-20 h-8 px-1 bg-card border-y border-r border-border rounded-r-md hover:bg-muted transition-colors"
+        >
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </button>
+      )}
+
+      {/* Map Area */}
+      <div className="flex-1 relative">
         {showMapLoading ? (
-          <div className="h-full flex items-center justify-center bg-slate-100">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-10 w-10 border-2 border-orange-500 border-t-transparent mx-auto mb-3" />
-              <p className="text-sm text-slate-500">Loading map...</p>
+          <div className="h-full flex items-center justify-center bg-muted/30">
+            <div className="flex flex-col items-center gap-2">
+              <div className="h-6 w-6 border-2 border-muted-foreground/30 border-t-foreground rounded-full animate-spin" />
+              <span className="text-xs text-muted-foreground">Loading map...</span>
             </div>
           </div>
         ) : (
           <InteractiveMap
             deals={mapDeals}
             selectedDeal={selectedDeal}
-            onDealSelect={(deal) => {
-              setSelectedDeal(deal)
-              setClickedLocation(null)
-            }}
+            onDealSelect={(deal) => { setSelectedDeal(deal); setClickedLocation(null) }}
             onViewDetails={handleViewDetails}
-            onBoundsChange={handleBoundsChange}
+            onBoundsChange={() => {}}
             onMapClick={handleMapClick}
             clickedLocation={clickedLocation}
           />
         )}
-      </div>
 
-      {/* Discovery Card - Top Right */}
-      {clickedLocation && (
-        <div className="absolute top-4 right-4 z-30">
-          <DiscoveryCard
-            lat={clickedLocation.lat}
-            lng={clickedLocation.lng}
-            onDiscover={handleDiscover}
-            onClose={() => setClickedLocation(null)}
-            isDiscovering={scrapeDeals.isPending}
-          />
-        </div>
-      )}
-
-      {/* Floating Sidebar Panel */}
-      <div 
-        className={`
-          absolute top-4 left-4 bottom-4 z-20 transition-all duration-300 ease-out
-          ${sidebarOpen ? 'w-96' : 'w-0 overflow-hidden'}
-        `}
-      >
-        {sidebarOpen && (
-          <div className="h-full bg-white/95 backdrop-blur-sm border border-slate-200 rounded-2xl shadow-xl overflow-hidden flex flex-col animate-slide-in">
-            {/* Sidebar Header */}
-            <div className="p-4 border-b border-slate-100">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold text-slate-900">Parking Lots</h2>
-                <button
-                  onClick={() => setSidebarOpen(false)}
-                  className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              {/* Status Filter */}
-              <div className="flex gap-1.5">
-                {statusTabs.map((tab) => {
-                  const Icon = tab.icon
-                  const count = getStatusCount(tab.value)
-                  return (
-                    <button
-                      key={tab.label}
-                      onClick={() => setStatusFilter(tab.value)}
-                      className={`
-                        flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all
-                        ${statusFilter === tab.value
-                          ? 'bg-orange-500 text-white shadow-sm'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }
-                      `}
-                    >
-                      <Icon className="h-3 w-3" />
-                      {tab.label}
-                      <span className="opacity-70">({count})</span>
-                    </button>
-                  )
-                })}
-        </div>
-      </div>
-
-            {/* Deals List */}
-            <div className="flex-1 overflow-y-auto">
-              {isLoading ? (
-                <div className="p-4 space-y-3">
-                  {[...Array(4)].map((_, i) => (
-                    <div key={i} className="h-20 bg-slate-100 rounded-xl animate-pulse" />
-                  ))}
-                  </div>
-              ) : deals.length > 0 ? (
-                <div className="p-3 space-y-2">
-                  {deals.map((deal) => (
-                    <DealCard
-                      key={deal.id}
-                      deal={deal}
-                      isSelected={selectedDeal?.id === deal.id}
-                      onClick={() => {
-                        setSelectedDeal(deal as any)
-                        setClickedLocation(null)
-                      }}
-                      onViewDetails={() => handleViewDetails(deal.id)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState />
-              )}
-            </div>
-
-            {/* Summary Footer */}
-            {deals.length > 0 && (
-              <div className="p-4 border-t border-slate-100 bg-slate-50/80">
-                <div className="grid grid-cols-4 gap-2 text-center">
-                  <div>
-                    <p className="text-lg font-bold text-slate-900">{deals.length}</p>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">Total</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-blue-500">
-                      {deals.filter((d: any) => d.has_business || d.business).length}
-                    </p>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">W/ Business</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-red-500">
-                      {deals.filter(d => d.status === 'evaluated' && d.score && d.score < 50).length}
-                    </p>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">Leads</p>
-                  </div>
-                  <div>
-                    <p className="text-lg font-bold text-green-500">
-                      {deals.filter(d => d.status === 'evaluated').length}
-                    </p>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">Analyzed</p>
-                  </div>
-                </div>
-              </div>
-            )}
+        {/* Discovery Card */}
+        {clickedLocation && (
+          <div className="absolute top-4 right-4 z-30">
+            <DiscoveryCard
+              lat={clickedLocation.lat}
+              lng={clickedLocation.lng}
+              onDiscover={handleDiscover}
+              onClose={() => setClickedLocation(null)}
+              isDiscovering={scrapeDeals.isPending}
+            />
           </div>
         )}
-      </div>
 
-      {/* Sidebar Toggle (when closed) */}
-      {!sidebarOpen && (
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="absolute top-4 left-4 z-30 h-10 w-10 bg-white border border-slate-200 rounded-xl shadow-lg flex items-center justify-center hover:bg-slate-50 transition-colors"
-        >
-          <ChevronRight className="h-4 w-4 text-slate-600" />
-        </button>
-      )}
-
-      {/* Zoom Controls - Bottom Right */}
-      <div className="absolute bottom-6 right-4 z-10 flex flex-col gap-1">
-        <button className="h-9 w-9 bg-white border border-slate-200 rounded-lg shadow-md flex items-center justify-center hover:bg-slate-50 transition-colors text-slate-600 text-lg font-light">
-          +
-        </button>
-        <button className="h-9 w-9 bg-white border border-slate-200 rounded-lg shadow-md flex items-center justify-center hover:bg-slate-50 transition-colors text-slate-600 text-lg font-light">
-          −
-        </button>
-      </div>
-
-      {/* Stats Bar - Bottom Center */}
-      {deals.length > 0 && !clickedLocation && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
-          <div className="flex items-center gap-4 px-5 py-2.5 bg-white/95 backdrop-blur-sm border border-slate-200 rounded-full shadow-lg">
-            <Stat label="Total" value={deals.length} />
-            <div className="h-4 w-px bg-slate-200" />
-            <Stat label="Analyzed" value={deals.filter(d => d.status === 'evaluated').length} color="text-green-500" />
-            <div className="h-4 w-px bg-slate-200" />
-            <Stat label="Leads" value={deals.filter(d => d.score && d.score < 50).length} color="text-red-500" />
+        {/* Map Legend - Inverted colors */}
+        <div className="absolute bottom-4 left-4 z-10">
+          <div className="flex items-center gap-3 px-3 py-2 bg-card/95 backdrop-blur-sm border border-border rounded-lg text-[11px] shadow-sm">
+            <LegendItem color="bg-emerald-500" label="Critical" />
+            <LegendItem color="bg-lime-500" label="Poor" />
+            <LegendItem color="bg-amber-500" label="Fair" />
+            <LegendItem color="bg-red-400" label="Good" />
+            <LegendItem color="bg-muted-foreground" label="Pending" />
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
 
-function DealCard({ 
+// Components
+
+function ParkingLotItem({ 
   deal, 
   isSelected, 
-  onClick,
-  onViewDetails 
+  onClick, 
+  onViewDetails,
+  getScoreColor
 }: { 
   deal: any
   isSelected: boolean
   onClick: () => void
   onViewDetails: () => void
+  getScoreColor: (score: number | null | undefined) => { bg: string; text: string }
 }) {
-  const getScoreColor = (score: number | null) => {
-    if (!score) return 'text-slate-400'
-    if (score < 30) return 'text-red-500'
-    if (score < 50) return 'text-orange-500'
-    if (score < 70) return 'text-yellow-600'
-    return 'text-green-500'
-  }
-
-  const getTierBadge = (tier: string | undefined) => {
-    switch (tier) {
-      case 'premium':
-        return (
-          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-800 flex items-center gap-1">
-            <Trophy className="h-2.5 w-2.5" />
-            Premium
-          </span>
-        )
-      case 'high':
-        return (
-          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-800 flex items-center gap-1">
-            <Star className="h-2.5 w-2.5" />
-            High
-          </span>
-        )
-      default:
-        return null
-    }
-  }
-
-  const isHighPriority = deal.score !== null && deal.score !== undefined && deal.score < 50
   const hasBusiness = deal.has_business || deal.business
-  const tier = deal.business_type_tier
+  const isLead = deal.score !== null && deal.score !== undefined && deal.score < 50
+  const score = deal.score
+  const scoreStyle = getScoreColor(score)
 
   return (
     <div
       onClick={onClick}
-      className={`
-        p-3 rounded-xl border cursor-pointer transition-all group
-        ${isSelected 
-          ? 'border-orange-400 bg-orange-50 shadow-sm' 
-          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-        }
-        ${isHighPriority ? 'ring-1 ring-red-200' : ''}
-        ${tier === 'premium' ? 'border-l-2 border-l-amber-400' : ''}
-        ${tier === 'high' ? 'border-l-2 border-l-purple-400' : ''}
-      `}
+      className={cn(
+        'px-3 py-3 cursor-pointer transition-all group',
+        isSelected ? 'bg-muted' : 'hover:bg-muted/50',
+        isLead && !isSelected && 'border-l-2 border-l-emerald-500'
+      )}
     >
       <div className="flex items-start gap-3">
-        {/* Status Indicator */}
-        <div className={`
-          mt-0.5 w-2 h-2 rounded-full flex-shrink-0
-          ${deal.status === 'evaluated' 
-            ? isHighPriority ? 'bg-red-500' : 'bg-green-500'
-            : deal.status === 'evaluating' 
-            ? 'bg-blue-500 animate-pulse' 
-            : 'bg-orange-500'
-          }
-        `} />
+        {/* Score Circle - Inverted colors */}
+        <div className={cn(
+          'w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 text-sm font-bold',
+          scoreStyle.bg,
+          scoreStyle.text
+        )}>
+          {score !== null && score !== undefined ? Math.round(score) : '—'}
+        </div>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2 mb-1">
-            <div className="flex items-center gap-2">
-              <h3 className="font-medium text-sm text-slate-900 line-clamp-1 leading-tight">
-                {deal.business_name || deal.address}
-              </h3>
-              {getTierBadge(tier)}
-            </div>
-            {deal.score !== null && deal.score !== undefined && (
-              <span className={`text-sm font-bold flex-shrink-0 ${getScoreColor(deal.score)}`}>
-                {Math.round(deal.score)}%
-              </span>
-            )}
-          </div>
-
-          {deal.address && deal.business_name && (
-            <p className="text-xs text-slate-500 mb-1.5 line-clamp-1">{deal.address}</p>
-          )}
-
-          {/* Business Association Badge */}
-          <div className="flex items-center gap-1.5 flex-wrap mb-2">
-            {hasBusiness ? (
-              <>
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-50 text-blue-700 flex items-center gap-1">
-                  <Building2 className="h-2.5 w-2.5" />
-                  {deal.business?.category || 'Business'}
-                </span>
-                {deal.business?.phone && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-green-50 text-green-700 flex items-center gap-1">
-                    <Phone className="h-2.5 w-2.5" />
-                    Has Phone
-                  </span>
-                )}
-                {deal.business?.website && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-cyan-50 text-cyan-700 flex items-center gap-1">
-                    <Globe className="h-2.5 w-2.5" />
-                    Website
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700 flex items-center gap-1">
-                <AlertCircle className="h-2.5 w-2.5" />
-                No Business Data
-              </span>
-            )}
-          </div>
-
-          {/* Score Bar */}
-          {deal.score !== null && deal.score !== undefined && (
-            <div className="h-1 bg-slate-100 rounded-full overflow-hidden mb-2">
-              <div 
-                className="h-full rounded-full transition-all"
-                style={{ 
-                  width: `${deal.score}%`,
-                  background: deal.score < 50 
-                    ? 'linear-gradient(90deg, #ef4444, #f97316)' 
-                    : 'linear-gradient(90deg, #22c55e, #84cc16)'
-                }}
-              />
-            </div>
-          )}
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className={`
-                text-[10px] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide
-                ${deal.status === 'evaluated' 
-                  ? 'bg-green-100 text-green-700' 
-                  : deal.status === 'evaluating'
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-orange-100 text-orange-700'
-                }
-              `}>
-                {deal.status}
-              </span>
-              {isHighPriority && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700 flex items-center gap-0.5">
-                  <TrendingDown className="h-2.5 w-2.5" />
-                  Lead
-                </span>
-              )}
-            </div>
+          {/* Title */}
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <span className="text-sm font-medium truncate">
+              {deal.business?.name || deal.business_name || 'Unknown Location'}
+            </span>
             <button 
-              onClick={(e) => { e.stopPropagation(); onViewDetails(); }}
-              className="text-[11px] font-medium text-orange-600 hover:text-orange-700 opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => { e.stopPropagation(); onViewDetails() }}
+              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-background transition-all flex-shrink-0"
             >
-              Details →
+              <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
+          </div>
+
+          {/* Address */}
+          <p className="text-xs text-muted-foreground truncate mb-2">{deal.address}</p>
+
+          {/* Tags */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {/* Status */}
+            <StatusChip 
+              status={deal.status === 'evaluated' ? 'success' : deal.status === 'evaluating' ? 'info' : 'warning'}
+              icon={deal.status === 'evaluated' ? CheckCircle2 : Clock}
+            >
+              {deal.status}
+            </StatusChip>
+
+            {/* Lead indicator */}
+            {isLead && (
+              <StatusChip status="success" icon={Target}>Lead</StatusChip>
+            )}
+
+            {/* Business indicator */}
+            {hasBusiness ? (
+              <StatusChip status="info" icon={Building2}>Business</StatusChip>
+            ) : (
+              <StatusChip status="warning" icon={AlertTriangle}>No business</StatusChip>
+            )}
           </div>
         </div>
       </div>
@@ -453,33 +410,56 @@ function DealCard({
   )
 }
 
-function EmptyState() {
+function StatItem({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center p-8">
-      <div className="w-16 h-16 rounded-2xl bg-orange-50 flex items-center justify-center mb-4">
-        <MapPin className="h-8 w-8 text-orange-300" />
-      </div>
-      <h3 className="font-semibold text-slate-900 mb-1">No parking lots yet</h3>
-      <p className="text-sm text-slate-500 max-w-[220px]">
-        Click anywhere on the map to discover parking lots in that area
-      </p>
+    <div>
+      <p className={cn('text-lg font-semibold tabular-nums', color)}>{value}</p>
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</p>
     </div>
   )
 }
 
-function Stat({ 
-  label, 
-  value, 
-  color = 'text-slate-900' 
+function LegendItem({ color, label }: { color: string; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className={cn('w-2 h-2 rounded-full', color)} />
+      <span className="text-muted-foreground">{label}</span>
+    </div>
+  )
+}
+
+function SegmentButton({ 
+  active, 
+  onClick, 
+  color, 
+  label,
+  flex
 }: { 
+  active: boolean
+  onClick: () => void
+  color: string
   label: string
-  value: number
-  color?: string
+  flex: number
 }) {
   return (
-    <div className="text-center">
-      <p className={`text-lg font-semibold ${color}`}>{value}</p>
-      <p className="text-xs text-slate-500">{label}</p>
-    </div>
+    <button
+      onClick={onClick}
+      style={{ flex }}
+      className={cn(
+        'relative text-[9px] font-medium transition-all border-r border-border last:border-r-0',
+        'flex items-center justify-center',
+        active 
+          ? 'text-white shadow-inner' 
+          : 'bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+      )}
+    >
+      {/* Color fill when active */}
+      <div className={cn(
+        'absolute inset-0 transition-opacity',
+        color,
+        active ? 'opacity-100' : 'opacity-0'
+      )} />
+      <span className="relative z-10">{label}</span>
+    </button>
   )
 }
