@@ -4,8 +4,7 @@ import { useParkingLot, useParkingLotBusinesses } from '@/lib/queries/use-parkin
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { StatusChip, IconChip } from '@/components/ui'
-import { SatelliteImageViewer } from '@/components/features/deals/satellite-image-viewer'
+import { StatusChip, IconChip, Switch, Label } from '@/components/ui'
 import { formatNumber, cn } from '@/lib/utils'
 import { 
   MapPin, 
@@ -24,11 +23,15 @@ import {
   Target,
   AlertTriangle,
   Ruler,
-  MapPinned
+  MapPinned,
+  Layers,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw
 } from 'lucide-react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 
 export default function ParkingLotDetailPage() {
   const params = useParams()
@@ -37,6 +40,37 @@ export default function ParkingLotDetailPage() {
   const { data: parkingLot, isLoading, error } = useParkingLot(parkingLotId)
   const { data: businesses } = useParkingLotBusinesses(parkingLotId)
   const [copied, setCopied] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [activeImageType, setActiveImageType] = useState<'segmentation' | 'property_boundary' | 'condition_analysis'>('condition_analysis')
+  const [zoom, setZoom] = useState(100)
+  
+  // Image pan/drag state
+  const [isDragging, setIsDragging] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const imageContainerRef = useRef<HTMLDivElement>(null)
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (zoom <= 100) return // Only allow dragging when zoomed in
+    setIsDragging(true)
+    setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y })
+  }, [zoom, position])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging) return
+    const newX = e.clientX - dragStart.x
+    const newY = e.clientY - dragStart.y
+    setPosition({ x: newX, y: newY })
+  }, [isDragging, dragStart])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  const resetView = useCallback(() => {
+    setZoom(100)
+    setPosition({ x: 0, y: 0 })
+  }, [])
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href)
@@ -159,27 +193,142 @@ export default function ParkingLotDetailPage() {
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-          {/* Left Column - Satellite Image */}
+          {/* Left Column - CV Analysis Images */}
           <div className="space-y-4">
             <div className="border border-border rounded-lg overflow-hidden bg-card">
-              <div className="px-3 py-2 border-b border-border">
-                <span className="text-xs font-medium text-foreground">Satellite Imagery</span>
-              </div>
-              <div className="p-2">
-                {parkingLot.satellite_image_url ? (
-                  <SatelliteImageViewer
-                    imageUrl={parkingLot.satellite_image_url}
-                    parkingLotMask={undefined}
-                    crackDetections={parkingLot.degradation_areas}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-80 bg-muted/50 rounded">
-                    <div className="text-center">
-                      <MapPinned className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
-                      <p className="text-xs text-muted-foreground">No satellite image</p>
-                    </div>
+              <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                <span className="text-xs font-medium text-foreground">CV Analysis</span>
+                {parkingLot.property_analysis?.images?.wide_satellite && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-muted-foreground">
+                      {showOriginal ? 'Original' : 'Analysis'}
+                    </span>
+                    <Switch
+                      checked={!showOriginal}
+                      onCheckedChange={(checked) => setShowOriginal(!checked)}
+                    />
                   </div>
                 )}
+              </div>
+              <div className="relative">
+                {(() => {
+                  const images = parkingLot.property_analysis?.images
+                  const toDataUrl = (b64: string | undefined) => 
+                    b64 ? (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`) : null
+                  
+                  const currentImage = showOriginal 
+                    ? toDataUrl(images?.wide_satellite)
+                    : toDataUrl(images?.[activeImageType])
+                  
+                  if (currentImage) {
+                    return (
+                      <>
+                        {/* Large Image Container with Pan/Drag */}
+                        <div 
+                          ref={imageContainerRef}
+                          className={cn(
+                            "relative h-[500px] bg-gray-900 overflow-hidden select-none",
+                            zoom > 100 ? "cursor-grab" : "cursor-default",
+                            isDragging && "cursor-grabbing"
+                          )}
+                          onMouseDown={handleMouseDown}
+                          onMouseMove={handleMouseMove}
+                          onMouseUp={handleMouseUp}
+                          onMouseLeave={handleMouseUp}
+                        >
+                          <img
+                            src={currentImage}
+                            alt={showOriginal ? 'Original satellite' : `CV ${activeImageType}`}
+                            className="w-full h-full object-contain transition-transform pointer-events-none"
+                            style={{ 
+                              transform: `scale(${zoom / 100}) translate(${position.x / (zoom / 100)}px, ${position.y / (zoom / 100)}px)`,
+                            }}
+                            draggable={false}
+                          />
+                          
+                          {/* Drag hint when zoomed */}
+                          {zoom > 100 && !isDragging && (
+                            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/60 text-white text-[10px] px-2 py-1 rounded">
+                              Drag to pan
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Image Controls */}
+                        <div className="absolute top-3 right-3 flex items-center gap-1 bg-black/50 backdrop-blur-sm rounded-lg p-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                            onClick={() => {
+                              setZoom(z => Math.max(50, z - 25))
+                              if (zoom <= 100) setPosition({ x: 0, y: 0 })
+                            }}
+                          >
+                            <ZoomOut className="h-4 w-4" />
+                          </Button>
+                          <span className="text-xs text-white px-2 min-w-[50px] text-center font-medium">
+                            {zoom}%
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                            onClick={() => setZoom(z => Math.min(300, z + 25))}
+                          >
+                            <ZoomIn className="h-4 w-4" />
+                          </Button>
+                          <div className="w-px h-5 bg-white/30 mx-1" />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0 text-white hover:bg-white/20"
+                            onClick={resetView}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        
+                        {/* Image Type Tabs - only show when not viewing original */}
+                        {!showOriginal && (
+                          <div className="p-2 bg-muted/50 border-t border-border">
+                            <div className="flex gap-1">
+                              {(['segmentation', 'property_boundary', 'condition_analysis'] as const).map((type) => (
+                                <button
+                                  key={type}
+                                  onClick={() => {
+                                    setActiveImageType(type)
+                                    resetView()
+                                  }}
+                                  className={cn(
+                                    'flex-1 px-3 py-2 text-xs font-medium rounded transition-colors',
+                                    activeImageType === type
+                                      ? 'bg-primary text-primary-foreground'
+                                      : 'bg-background hover:bg-muted text-muted-foreground'
+                                  )}
+                                >
+                                  {type === 'segmentation' && 'Segmentation'}
+                                  {type === 'property_boundary' && 'Property'}
+                                  {type === 'condition_analysis' && 'Condition'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )
+                  }
+                  
+                  return (
+                    <div className="flex items-center justify-center h-[500px] bg-muted/50 rounded">
+                      <div className="text-center">
+                        <MapPinned className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
+                        <p className="text-sm text-muted-foreground">No CV analysis available</p>
+                        <p className="text-xs text-muted-foreground mt-1">Run discovery to generate images</p>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             </div>
 
@@ -189,22 +338,6 @@ export default function ParkingLotDetailPage() {
                 <Download className="h-3.5 w-3.5 mr-1.5" />
                 Export Report
               </Button>
-              {parkingLot.satellite_image_url && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="h-8 text-xs"
-                  onClick={() => {
-                    const link = document.createElement('a')
-                    link.href = parkingLot.satellite_image_url!
-                    link.download = `parking-lot-${parkingLotId}.jpg`
-                    link.click()
-                  }}
-                >
-                  <Download className="h-3.5 w-3.5 mr-1.5" />
-                  Download Image
-                </Button>
-              )}
             </div>
           </div>
 
@@ -288,36 +421,57 @@ export default function ParkingLotDetailPage() {
               </div>
             </div>
 
-            {/* Business */}
+            {/* Business Card - Complete */}
             <div className={cn(
               'border rounded-lg bg-card',
               hasBusinessData ? 'border-blue-500/30' : 'border-border'
             )}>
               <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-                <span className="text-xs font-medium text-foreground">Business</span>
+                <div className="flex items-center gap-2">
+                  <Building2 className={cn('h-4 w-4', hasBusinessData ? 'text-blue-500' : 'text-muted-foreground')} />
+                  <span className="text-xs font-medium text-foreground">Business</span>
+                </div>
                 {hasBusinessData && <CheckCircle2 className="h-3.5 w-3.5 text-blue-500" />}
               </div>
-              <div className="p-3">
+              <div className="p-4">
                 {hasBusinessData && primaryBusiness ? (
-                  <div className="space-y-2.5 text-xs">
+                  <div className="space-y-4">
+                    {/* Business Name & Category */}
                     <div>
-                      <span className="text-muted-foreground">Name</span>
-                      <p className="text-foreground font-medium mt-0.5">{primaryBusiness.name}</p>
+                      <h3 className="text-base font-semibold text-foreground">{primaryBusiness.name}</h3>
+                      {primaryBusiness.category && (
+                        <Badge variant="outline" className="text-[10px] h-5 mt-1.5">{primaryBusiness.category}</Badge>
+                      )}
                     </div>
-                    {primaryBusiness.category && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Category</span>
-                        <Badge variant="outline" className="text-[10px] h-5">{primaryBusiness.category}</Badge>
+                    
+                    {/* Address */}
+                    {primaryBusiness.address && (
+                      <div className="flex items-start gap-2 text-sm">
+                        <MapPin className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                        <span className="text-muted-foreground">{primaryBusiness.address}</span>
                       </div>
                     )}
-                    <div className="flex flex-wrap gap-1.5 pt-2 border-t border-border">
+                    
+                    {/* Contact Info */}
+                    <div className="space-y-2">
                       {primaryBusiness.phone && (
                         <a
                           href={`tel:${primaryBusiness.phone}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted rounded-md border border-border transition-colors"
+                          className="flex items-center gap-2 text-sm text-foreground hover:text-blue-600 transition-colors"
                         >
-                          <Phone className="h-3 w-3" />
-                          {primaryBusiness.phone}
+                          <Phone className="h-4 w-4 text-muted-foreground" />
+                          <span>{primaryBusiness.phone}</span>
+                        </a>
+                      )}
+                      {primaryBusiness.email && (
+                        <a
+                          href={`mailto:${primaryBusiness.email}`}
+                          className="flex items-center gap-2 text-sm text-foreground hover:text-blue-600 transition-colors"
+                        >
+                          <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                          </svg>
+                          <span>{primaryBusiness.email}</span>
                         </a>
                       )}
                       {primaryBusiness.website && (
@@ -325,23 +479,141 @@ export default function ParkingLotDetailPage() {
                           href={primaryBusiness.website}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted rounded-md border border-border transition-colors"
+                          className="flex items-center gap-2 text-sm text-foreground hover:text-blue-600 transition-colors"
                         >
-                          <Globe className="h-3 w-3" />
-                          Website
-                          <ExternalLink className="h-2.5 w-2.5" />
+                          <Globe className="h-4 w-4 text-muted-foreground" />
+                          <span className="truncate">{primaryBusiness.website.replace(/^https?:\/\//, '')}</span>
+                          <ExternalLink className="h-3 w-3 text-muted-foreground" />
                         </a>
+                      )}
+                    </div>
+                    
+                    {/* Match Score - if from associated businesses */}
+                    {businesses?.[0]?.match_score && (
+                      <div className="pt-3 border-t border-border flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">Match Confidence</span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-blue-500 rounded-full"
+                              style={{ width: `${businesses[0].match_score}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-medium text-foreground">
+                            {Math.round(businesses[0].match_score)}%
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Quick Actions */}
+                    <div className="pt-3 border-t border-border flex gap-2">
+                      {primaryBusiness.phone && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="flex-1 h-9 text-xs"
+                          onClick={() => window.open(`tel:${primaryBusiness.phone}`)}
+                        >
+                          <Phone className="h-3.5 w-3.5 mr-1.5" />
+                          Call
+                        </Button>
+                      )}
+                      {primaryBusiness.website && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="flex-1 h-9 text-xs"
+                          onClick={() => window.open(primaryBusiness.website, '_blank')}
+                        >
+                          <Globe className="h-3.5 w-3.5 mr-1.5" />
+                          Website
+                        </Button>
                       )}
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center py-4">
-                    <AlertTriangle className="h-5 w-5 text-muted-foreground/30 mx-auto mb-1.5" />
-                    <p className="text-xs text-muted-foreground">No business data</p>
+                  <div className="text-center py-6">
+                    <AlertTriangle className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">No business data</p>
+                    <p className="text-xs text-muted-foreground mt-1">Business information not available</p>
                   </div>
                 )}
               </div>
             </div>
+
+            {/* Property Boundary Info (from Regrid) */}
+            {parkingLot.property_analysis?.property_boundary && (
+              <div className={cn(
+                'border rounded-lg bg-card',
+                parkingLot.property_analysis.property_boundary.source === 'regrid' 
+                  ? 'border-purple-500/30' 
+                  : 'border-border'
+              )}>
+                <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers className={cn(
+                      'h-4 w-4', 
+                      parkingLot.property_analysis.property_boundary.source === 'regrid' 
+                        ? 'text-purple-500' 
+                        : 'text-muted-foreground'
+                    )} />
+                    <span className="text-xs font-medium text-foreground">Property Boundary</span>
+                  </div>
+                  <Badge 
+                    variant="outline" 
+                    className={cn(
+                      'text-[10px] h-5 capitalize',
+                      parkingLot.property_analysis.property_boundary.source === 'regrid' && 'border-purple-500/50 text-purple-600'
+                    )}
+                  >
+                    {parkingLot.property_analysis.property_boundary.source}
+                  </Badge>
+                </div>
+                <div className="p-3 space-y-2 text-xs">
+                  {parkingLot.property_analysis.property_boundary.owner && (
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-muted-foreground flex-shrink-0">Owner</span>
+                      <span className="text-foreground text-right truncate">
+                        {parkingLot.property_analysis.property_boundary.owner}
+                      </span>
+                    </div>
+                  )}
+                  {parkingLot.property_analysis.property_boundary.apn && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">APN</span>
+                      <span className="text-foreground font-mono text-[11px]">
+                        {parkingLot.property_analysis.property_boundary.apn}
+                      </span>
+                    </div>
+                  )}
+                  {parkingLot.property_analysis.property_boundary.land_use && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">Land Use</span>
+                      <Badge variant="outline" className="text-[10px] h-5">
+                        {parkingLot.property_analysis.property_boundary.land_use}
+                      </Badge>
+                    </div>
+                  )}
+                  {parkingLot.property_analysis.property_boundary.zoning && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">Zoning</span>
+                      <Badge variant="outline" className="text-[10px] h-5">
+                        {parkingLot.property_analysis.property_boundary.zoning}
+                      </Badge>
+                    </div>
+                  )}
+                  {parkingLot.property_analysis.property_boundary.parcel_id && (
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-border mt-2">
+                      <span className="text-muted-foreground">Parcel ID</span>
+                      <span className="text-foreground font-mono text-[10px] truncate max-w-[150px]">
+                        {parkingLot.property_analysis.property_boundary.parcel_id}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Evaluation Error */}
             {parkingLot.evaluation_error && (
@@ -358,69 +630,6 @@ export default function ParkingLotDetailPage() {
           </div>
         </div>
 
-        {/* Associated Businesses */}
-        {businesses && businesses.length > 0 && (
-          <div className="mt-6">
-            <div className="border border-border rounded-lg bg-card">
-              <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-                <span className="text-xs font-medium text-foreground">Associated Businesses</span>
-                <Badge variant="outline" className="text-[10px] h-5">{businesses.length}</Badge>
-              </div>
-              <div className="divide-y divide-border">
-                {businesses.map((business) => (
-                  <div key={business.id} className="p-3 flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Building2 className={cn('h-3.5 w-3.5', business.is_primary ? 'text-blue-500' : 'text-muted-foreground')} />
-                        <span className="text-sm font-medium text-foreground truncate">{business.name}</span>
-                        {business.is_primary && (
-                          <Badge className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-[10px] h-5">Primary</Badge>
-                        )}
-                      </div>
-                      {business.address && (
-                        <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
-                          <MapPin className="h-3 w-3 flex-shrink-0" />
-                          {business.address}
-                        </p>
-                      )}
-                      {business.category && (
-                        <Badge variant="outline" className="text-[10px] h-5 mb-2">{business.category}</Badge>
-                      )}
-                      <div className="flex flex-wrap gap-1.5">
-                        {business.phone && (
-                          <a
-                            href={`tel:${business.phone}`}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted rounded-md border border-border transition-colors"
-                          >
-                            <Phone className="h-3 w-3" />
-                            {business.phone}
-                          </a>
-                        )}
-                        {business.website && (
-                          <a
-                            href={business.website}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted rounded-md border border-border transition-colors"
-                          >
-                            <Globe className="h-3 w-3" />
-                            Website
-                            <ExternalLink className="h-2.5 w-2.5" />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <div className="text-[10px] text-muted-foreground mb-0.5">Match</div>
-                      <div className="text-base font-semibold tabular-nums text-foreground">{Math.round(business.match_score)}%</div>
-                      <div className="text-[10px] text-muted-foreground">{formatNumber(business.distance_meters, 0)}m</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

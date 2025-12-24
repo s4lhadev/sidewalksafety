@@ -20,6 +20,24 @@ export interface BusinessSummary {
   category?: string
 }
 
+export interface PropertyAnalysisImages {
+  wide_satellite?: string
+  segmentation?: string
+  property_boundary?: string
+  condition_analysis?: string
+}
+
+export interface PropertyAnalysisSummary {
+  id: string
+  status: string
+  total_asphalt_area_m2?: number
+  weighted_condition_score?: number
+  total_crack_count: number
+  total_pothole_count: number
+  images: PropertyAnalysisImages
+  analyzed_at?: string
+}
+
 export interface ParkingLotDetail {
   id: string
   centroid: ParkingLotCoordinates
@@ -45,6 +63,7 @@ export interface ParkingLotDetail {
   business?: BusinessSummary
   match_score?: number
   distance_meters?: number
+  property_analysis?: PropertyAnalysisSummary
 }
 
 export interface ParkingLotBusiness {

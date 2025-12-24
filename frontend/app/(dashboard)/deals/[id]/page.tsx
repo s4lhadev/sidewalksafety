@@ -1,22 +1,68 @@
 'use client'
 
+import { useState, useMemo } from 'react'
 import { useDealWithEvaluation } from '@/lib/queries/use-evaluations'
 import { useEvaluateDeal } from '@/lib/queries/use-evaluations'
+import { usePropertyAnalysisForDeal, useStartPropertyAnalysis, usePropertyAnalysis } from '@/lib/queries/use-property-analysis'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SatelliteImageViewer } from '@/components/features/deals/satellite-image-viewer'
+import { PropertyAnalysisCard, AnalysisImageViewer } from '@/components/features/analysis'
 import { getStatusColor, getDamageSeverityColor, formatCurrency, formatNumber } from '@/lib/utils'
-import { MapPin, Building2, DollarSign, TrendingUp, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { MapPin, Building2, DollarSign, TrendingUp, AlertTriangle, ArrowLeft, Scan } from 'lucide-react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import type { PropertyAnalysis } from '@/types'
 
 export default function DealDetailPage() {
   const params = useParams()
   const dealId = params.id as string
-  const { data: deal, isLoading } = useDealWithEvaluation(dealId)
+  const { data: deal, isLoading, refetch } = useDealWithEvaluation(dealId)
   const evaluateDeal = useEvaluateDeal()
+  
+  // Property Analysis - check both embedded and separate
+  const { data: existingAnalysis, refetch: refetchAnalysis } = usePropertyAnalysisForDeal(dealId)
+  const startAnalysis = useStartPropertyAnalysis()
+  const [analysisId, setAnalysisId] = useState<string | undefined>()
+  const { data: polledAnalysis } = usePropertyAnalysis(analysisId)
+  const [showImageViewer, setShowImageViewer] = useState(false)
+  
+  // Use embedded property_analysis from deal, or polled analysis, or fetched analysis
+  const propertyAnalysis: PropertyAnalysis | null = useMemo(() => {
+    // Priority: polled analysis (for live updates) > embedded > fetched
+    if (polledAnalysis?.status === 'completed') return polledAnalysis
+    if (deal?.property_analysis) {
+      // Convert embedded summary to full PropertyAnalysis format
+      return {
+        id: deal.property_analysis.id,
+        status: deal.property_analysis.status as 'pending' | 'processing' | 'completed' | 'failed',
+        total_asphalt_area_m2: deal.property_analysis.total_asphalt_area_m2,
+        weighted_condition_score: deal.property_analysis.weighted_condition_score,
+        total_crack_count: deal.property_analysis.total_crack_count,
+        total_pothole_count: deal.property_analysis.total_pothole_count,
+        images: deal.property_analysis.images,
+        analyzed_at: deal.property_analysis.analyzed_at,
+        asphalt_areas: [],
+      }
+    }
+    if (polledAnalysis) return polledAnalysis
+    if (existingAnalysis) return existingAnalysis
+    return null
+  }, [deal?.property_analysis, polledAnalysis, existingAnalysis])
+  
+  const handleStartAnalysis = async () => {
+    if (!deal?.latitude || !deal?.longitude) return
+    
+    const result = await startAnalysis.mutateAsync({
+      latitude: deal.latitude,
+      longitude: deal.longitude,
+      parking_lot_id: dealId,
+    })
+    
+    setAnalysisId(result.analysis_id)
+  }
 
   if (isLoading) {
     return (
@@ -170,6 +216,52 @@ export default function DealDetailPage() {
           crackDetections={evaluation.crack_detections}
         />
       )}
+
+      {/* Property Analysis Section */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Scan className="h-5 w-5" />
+              Property CV Analysis
+            </CardTitle>
+            {!propertyAnalysis && deal?.latitude && deal?.longitude && (
+              <Button
+                onClick={handleStartAnalysis}
+                disabled={startAnalysis.isPending}
+                size="sm"
+              >
+                {startAnalysis.isPending ? 'Starting...' : 'Run CV Analysis'}
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {propertyAnalysis ? (
+            <>
+              <PropertyAnalysisCard
+                analysis={propertyAnalysis}
+                onViewFullScreen={() => setShowImageViewer(true)}
+              />
+              {propertyAnalysis.status === 'completed' && (
+                <AnalysisImageViewer
+                  analysis={propertyAnalysis}
+                  open={showImageViewer}
+                  onOpenChange={setShowImageViewer}
+                />
+              )}
+            </>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              <Scan className="h-12 w-12 mx-auto mb-3 opacity-50" />
+              <p className="text-sm">No CV analysis yet</p>
+              <p className="text-xs mt-1">
+                Run CV analysis to detect all asphalt surfaces and evaluate their condition
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

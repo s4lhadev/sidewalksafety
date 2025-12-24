@@ -93,8 +93,23 @@ export interface Evaluation {
   evaluated_at: string
 }
 
+// Property Analysis Summary (embedded in parking lot/deal response)
+export interface PropertyAnalysisSummary {
+  id: string
+  status: string
+  total_asphalt_area_m2?: number
+  weighted_condition_score?: number
+  total_crack_count: number
+  total_pothole_count: number
+  images: PropertyAnalysisImages
+  analyzed_at?: string
+  // Regrid property boundary info
+  property_boundary?: PropertyBoundaryInfo
+}
+
 export interface DealWithEvaluation extends Deal {
   evaluation?: Evaluation
+  property_analysis?: PropertyAnalysisSummary
 }
 
 export interface GeographicSearchRequest {
@@ -142,5 +157,84 @@ export interface UserCreate {
 export interface UserLogin {
   email: string
   password: string
+}
+
+// Property Analysis Types
+export interface AsphaltArea {
+  id: string
+  area_type?: string
+  area_m2?: number
+  is_associated: boolean
+  association_reason?: string
+  distance_to_building_m?: number
+  condition_score?: number
+  crack_count?: number
+  pothole_count?: number
+  crack_density?: number
+}
+
+export interface PropertyAnalysisImages {
+  wide_satellite?: string
+  segmentation?: string
+  property_boundary?: string
+  condition_analysis?: string
+}
+
+// Property boundary info from Regrid
+export interface PropertyBoundaryInfo {
+  source: 'regrid' | 'osm' | 'estimated'
+  parcel_id?: string
+  owner?: string
+  apn?: string  // Assessor Parcel Number
+  land_use?: string
+  zoning?: string
+  // GeoJSON polygon (for map display)
+  polygon?: GeoJSONPolygon
+}
+
+export interface GeoJSONPolygon {
+  type: 'Polygon'
+  coordinates: number[][][]
+}
+
+export interface PropertyAnalysis {
+  id: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  latitude?: number
+  longitude?: number
+  total_asphalt_area_m2?: number
+  weighted_condition_score?: number
+  total_crack_count?: number
+  total_pothole_count?: number
+  images: PropertyAnalysisImages
+  asphalt_areas: AsphaltArea[]
+  business_id?: string
+  parking_lot_id?: string
+  analyzed_at?: string
+  created_at?: string
+  error_message?: string
+  // Regrid property boundary data
+  property_boundary?: PropertyBoundaryInfo
+}
+
+export interface PropertyAnalysisRequest {
+  latitude: number
+  longitude: number
+  business_id?: string
+  parking_lot_id?: string
+}
+
+export interface PropertyAnalysisJobResponse {
+  job_id: string
+  analysis_id: string
+  status: string
+  message: string
+}
+
+export interface PropertyAnalysisListResponse {
+  total: number
+  limit: number
+  offset: number
+  results: PropertyAnalysis[]
 }
 

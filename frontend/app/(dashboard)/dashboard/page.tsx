@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useCallback, useRef, useMemo } from 'react'
-import { useDeals, useDealsForMap, useScrapeDeals } from '@/lib/queries/use-deals'
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import { useDeals, useDealsForMap, useScrapeDeals, MapBounds } from '@/lib/queries/use-deals'
 import { InteractiveMap } from '@/components/map/interactive-map'
 import { DiscoveryCard } from '@/components/map/discovery-card'
 import { DealMapResponse } from '@/types'
@@ -24,6 +24,9 @@ import {
 
 type ScoreFilter = 'all' | 'lead' | 'critical' | 'poor' | 'fair' | 'good'
 
+// Debounce delay for bounds changes (ms)
+const BOUNDS_DEBOUNCE_MS = 500
+
 export default function DashboardPage() {
   const router = useRouter()
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
@@ -31,6 +34,10 @@ export default function DashboardPage() {
   const [selectedDeal, setSelectedDeal] = useState<DealMapResponse | null>(null)
   const [panelOpen, setPanelOpen] = useState(true)
   const [clickedLocation, setClickedLocation] = useState<{ lat: number; lng: number } | null>(null)
+  
+  // Map bounds state with debouncing
+  const [mapBounds, setMapBounds] = useState<MapBounds | undefined>(undefined)
+  const boundsTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const hasMapLoadedOnce = useRef(false)
   const scrapeDeals = useScrapeDeals()
@@ -57,7 +64,11 @@ export default function DashboardPage() {
     })
   }, [allDeals, scoreFilter])
   
-  const { data: mapDealsData, isLoading: isLoadingMap } = useDealsForMap({ status: statusFilter })
+  // Pass bounds to map query for PostGIS spatial filtering
+  const { data: mapDealsData, isLoading: isLoadingMap } = useDealsForMap({ 
+    status: statusFilter,
+    ...mapBounds,
+  })
   const mapDeals = Array.isArray(mapDealsData) ? mapDealsData : []
   
   if (mapDealsData && !hasMapLoadedOnce.current) hasMapLoadedOnce.current = true
@@ -68,6 +79,28 @@ export default function DashboardPage() {
   const handleMapClick = useCallback((lat: number, lng: number) => {
     setSelectedDeal(null)
     setClickedLocation({ lat, lng })
+  }, [])
+
+  // Debounced bounds change handler
+  const handleBoundsChange = useCallback((bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => {
+    // Clear any pending timeout
+    if (boundsTimeoutRef.current) {
+      clearTimeout(boundsTimeoutRef.current)
+    }
+    
+    // Set new timeout for debounced update
+    boundsTimeoutRef.current = setTimeout(() => {
+      setMapBounds(bounds)
+    }, BOUNDS_DEBOUNCE_MS)
+  }, [])
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (boundsTimeoutRef.current) {
+        clearTimeout(boundsTimeoutRef.current)
+      }
+    }
   }, [])
 
   const handleDiscover = (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => {
@@ -292,7 +325,7 @@ export default function DashboardPage() {
             selectedDeal={selectedDeal}
             onDealSelect={(deal) => { setSelectedDeal(deal); setClickedLocation(null) }}
             onViewDetails={handleViewDetails}
-            onBoundsChange={() => {}}
+            onBoundsChange={handleBoundsChange}
             onMapClick={handleMapClick}
             clickedLocation={clickedLocation}
           />

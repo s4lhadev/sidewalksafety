@@ -93,6 +93,18 @@ class ParkingLotResponse(ParkingLotBase):
         from_attributes = True
 
 
+class PropertyAnalysisSummary(BaseModel):
+    """Summary of property analysis for embedding in parking lot response."""
+    id: str
+    status: str
+    total_asphalt_area_m2: Optional[float] = None
+    weighted_condition_score: Optional[float] = None
+    total_crack_count: int = 0
+    total_pothole_count: int = 0
+    images: Dict[str, Optional[str]] = {}
+    analyzed_at: Optional[str] = None
+
+
 class ParkingLotDetailResponse(ParkingLotResponse):
     degradation_areas: Optional[List[Dict[str, Any]]] = None
     raw_metadata: Optional[Dict[str, Any]] = None
@@ -101,6 +113,7 @@ class ParkingLotDetailResponse(ParkingLotResponse):
     business: Optional[BusinessSummary] = None
     match_score: Optional[float] = None
     distance_meters: Optional[float] = None
+    property_analysis: Optional[PropertyAnalysisSummary] = None
 
     class Config:
         from_attributes = True

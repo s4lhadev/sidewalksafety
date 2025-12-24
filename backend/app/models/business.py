@@ -48,6 +48,7 @@ class Business(Base):
     # Relationships
     parking_lot_associations = relationship("ParkingLotBusinessAssociation", back_populates="business", cascade="all, delete-orphan")
     deals = relationship("Deal", back_populates="business", cascade="all, delete-orphan")
+    property_analyses = relationship("PropertyAnalysis", back_populates="business")
 
     # Indexes
     __table_args__ = (

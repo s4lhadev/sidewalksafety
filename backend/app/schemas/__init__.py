@@ -40,6 +40,14 @@ from app.schemas.deal import (
     DealListParams,
     DealListResponse,
 )
+from app.schemas.property_analysis import (
+    PropertyAnalysisRequest,
+    PropertyAnalysisResponse,
+    PropertyAnalysisJobResponse,
+    PropertyAnalysisListResponse,
+    PropertyAnalysisImages,
+    AsphaltAreaResponse,
+)
 
 __all__ = [
     # User
@@ -85,5 +93,12 @@ __all__ = [
     "DealDetailResponse",
     "DealListParams",
     "DealListResponse",
+    # Property Analysis
+    "PropertyAnalysisRequest",
+    "PropertyAnalysisResponse",
+    "PropertyAnalysisJobResponse",
+    "PropertyAnalysisListResponse",
+    "PropertyAnalysisImages",
+    "AsphaltAreaResponse",
 ]
 

@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+import os
 from app.core.config import settings
 from app.api.v1.router import api_router
 
@@ -74,3 +76,21 @@ def health_check():
 
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+# Mount static files for CV images
+# This serves files from storage/cv_images at /api/v1/images
+cv_images_path = settings.CV_IMAGE_STORAGE_PATH
+if os.path.exists(cv_images_path):
+    app.mount(
+        settings.CV_IMAGE_BASE_URL,
+        StaticFiles(directory=cv_images_path),
+        name="cv_images"
+    )
+else:
+    # Create the directory if it doesn't exist
+    os.makedirs(cv_images_path, exist_ok=True)
+    app.mount(
+        settings.CV_IMAGE_BASE_URL,
+        StaticFiles(directory=cv_images_path),
+        name="cv_images"
+    )

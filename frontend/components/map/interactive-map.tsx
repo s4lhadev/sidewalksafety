@@ -7,6 +7,7 @@ import { DealMapResponse } from '@/types'
 import { MapPin, ExternalLink, Satellite, Map as MapIcon, X, CheckCircle2, Clock, Target, Building2, Phone, Globe, AlertTriangle } from 'lucide-react'
 import { StatusChip, IconChip } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { parkingLotsApi } from '@/lib/api/parking-lots'
 
 interface InteractiveMapProps {
   deals: DealMapResponse[]
@@ -633,6 +634,35 @@ function ParkingLotPopup({
   onViewDetails: () => void
   onClose: () => void
 }) {
+  const [satelliteImage, setSatelliteImage] = useState<string | null>(null)
+  const [imageLoading, setImageLoading] = useState(true)
+
+  // Reset and lazy load the satellite image when deal changes
+  useEffect(() => {
+    // Reset state immediately when deal changes
+    setSatelliteImage(null)
+    setImageLoading(true)
+    
+    const fetchImage = async () => {
+      try {
+        const data = await parkingLotsApi.getParkingLot(deal.id)
+        const wideSatellite = data.property_analysis?.images?.wide_satellite
+        if (wideSatellite) {
+          // Convert base64 to data URL if needed
+          const imageUrl = wideSatellite.startsWith('data:') 
+            ? wideSatellite 
+            : `data:image/jpeg;base64,${wideSatellite}`
+          setSatelliteImage(imageUrl)
+        }
+      } catch (error) {
+        console.error('Failed to load satellite image:', error)
+      } finally {
+        setImageLoading(false)
+      }
+    }
+    fetchImage()
+  }, [deal.id])
+
   const getScoreColor = (score: number | null | undefined) => {
     if (score === null || score === undefined) {
       return { bg: 'bg-muted', text: 'text-muted-foreground' }
@@ -660,42 +690,49 @@ function ParkingLotPopup({
       </button>
 
       {/* Satellite Image */}
-      {deal.satellite_url ? (
-        <div className="relative h-40 bg-muted overflow-hidden">
+      <div className="relative h-36 bg-gradient-to-br from-slate-800 to-slate-900 overflow-hidden">
+        {satelliteImage ? (
           <img 
-            src={deal.satellite_url} 
+            src={satelliteImage} 
             alt="Satellite view"
             className="w-full h-full object-cover"
           />
-        </div>
-      ) : (
-        <div className="h-40 bg-muted flex items-center justify-center">
-          <MapPin className="h-8 w-8 text-muted-foreground/30" />
-        </div>
-      )}
+        ) : imageLoading ? (
+          <div className="w-full h-full flex items-center justify-center">
+            <div className="animate-pulse flex flex-col items-center">
+              <Satellite className="h-8 w-8 text-white/40 mb-1" />
+              <p className="text-[10px] text-white/50">Loading...</p>
+            </div>
+          </div>
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <div className="text-center">
+              <Satellite className="h-8 w-8 text-white/40 mx-auto mb-1" />
+              <p className="text-[10px] text-white/50 uppercase tracking-wider">No image</p>
+            </div>
+          </div>
+        )}
+        {/* Score badge overlay */}
+        {deal.score !== null && deal.score !== undefined && (
+          <div className={cn(
+            'absolute top-2 left-2 px-2 py-1 rounded text-xs font-bold shadow-lg',
+            scoreStyle.bg, scoreStyle.text
+          )}>
+            {Math.round(deal.score)}/100
+          </div>
+        )}
+      </div>
 
       {/* Content */}
-      <div className="p-3 space-y-3">
-        {/* Header with Score */}
-        <div className="flex items-start gap-3">
-          {/* Score Circle */}
-          <div className={cn(
-            'w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0 text-base font-bold',
-            scoreStyle.bg,
-            scoreStyle.text
-          )}>
-            {deal.score !== null && deal.score !== undefined ? Math.round(deal.score) : '—'}
-          </div>
-
-          {/* Title & Address */}
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-foreground truncate mb-0.5">
-              {deal.business?.name || deal.business_name || 'Unknown Location'}
-            </h3>
-            <div className="flex items-start gap-1 text-xs text-muted-foreground">
-              <MapPin className="h-3 w-3 flex-shrink-0 mt-0.5" />
-              <span className="line-clamp-2">{deal.address}</span>
-            </div>
+      <div className="p-3 space-y-2">
+        {/* Title & Address */}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-foreground truncate mb-0.5">
+            {deal.business?.name || deal.business_name || 'Unknown Location'}
+          </h3>
+          <div className="flex items-start gap-1 text-xs text-muted-foreground">
+            <MapPin className="h-3 w-3 flex-shrink-0 mt-0.5" />
+            <span className="line-clamp-2">{deal.address}</span>
           </div>
         </div>
 

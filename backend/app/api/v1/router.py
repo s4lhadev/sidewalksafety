@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, discovery, parking_lots, businesses, deals, usage
+from app.api.v1.endpoints import auth, discovery, parking_lots, businesses, deals, usage, property_analysis
 
 api_router = APIRouter()
 
@@ -9,3 +9,4 @@ api_router.include_router(parking_lots.router, prefix="/parking-lots", tags=["pa
 api_router.include_router(businesses.router, prefix="/businesses", tags=["businesses"])
 api_router.include_router(deals.router, prefix="/deals", tags=["deals"])
 api_router.include_router(usage.router, prefix="/usage", tags=["usage"])
+api_router.include_router(property_analysis.router, tags=["property-analysis"])

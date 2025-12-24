@@ -1,15 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy.orm import Session, selectinload, joinedload
+from sqlalchemy import and_, func, text
 from typing import List, Optional
 from uuid import UUID
 from geoalchemy2.shape import to_shape
+from geoalchemy2.functions import ST_X, ST_Y, ST_MakeEnvelope, ST_Intersects
 
 from app.db.base import get_db
 from app.models.parking_lot import ParkingLot
 from app.models.association import ParkingLotBusinessAssociation
 from app.models.business import Business
 from app.models.user import User
+from app.models.property_analysis import PropertyAnalysis
+from app.models.asphalt_area import AsphaltArea
 from app.schemas.parking_lot import (
     ParkingLotResponse,
     ParkingLotDetailResponse,
@@ -61,6 +64,17 @@ def parking_lot_to_response(lot: ParkingLot, include_business: bool = False) -> 
     return response
 
 
+def get_primary_business_from_associations(associations) -> tuple:
+    """
+    Extract primary business from eagerly-loaded associations.
+    Returns (business, association) or (None, None).
+    """
+    for assoc in associations:
+        if assoc.is_primary:
+            return assoc.business, assoc
+    return None, None
+
+
 @router.get("", response_model=ParkingLotListResponse)
 def list_parking_lots(
     min_area_m2: Optional[float] = Query(None, description="Minimum lot area in m²"),
@@ -77,8 +91,17 @@ def list_parking_lots(
     List parking lots with filters.
     
     Returns parking lots owned by the current user with optional filtering.
+    Uses eager loading to avoid N+1 queries.
     """
-    query = db.query(ParkingLot).filter(ParkingLot.user_id == current_user.id)
+    # Base query with eager loading of associations and businesses
+    query = (
+        db.query(ParkingLot)
+        .filter(ParkingLot.user_id == current_user.id)
+        .options(
+            selectinload(ParkingLot.business_associations)
+            .joinedload(ParkingLotBusinessAssociation.business)
+        )
+    )
     
     # Apply filters
     if min_area_m2 is not None:
@@ -92,45 +115,53 @@ def list_parking_lots(
     
     if has_business is not None:
         if has_business:
-            query = query.join(ParkingLotBusinessAssociation).filter(
-                ParkingLotBusinessAssociation.is_primary == True
+            # Use exists subquery for filtering
+            subquery = (
+                db.query(ParkingLotBusinessAssociation.parking_lot_id)
+                .filter(ParkingLotBusinessAssociation.is_primary == True)
+                .subquery()
             )
+            query = query.filter(ParkingLot.id.in_(db.query(subquery)))
         else:
-            query = query.outerjoin(ParkingLotBusinessAssociation).filter(
-                ParkingLotBusinessAssociation.id == None
+            subquery = (
+                db.query(ParkingLotBusinessAssociation.parking_lot_id)
+                .filter(ParkingLotBusinessAssociation.is_primary == True)
+                .subquery()
             )
+            query = query.filter(~ParkingLot.id.in_(db.query(subquery)))
     
-    # Get total count
+    # Get total count (before pagination)
     total = query.count()
     
     # Apply pagination and ordering
-    lots = query.order_by(ParkingLot.condition_score.asc().nullslast()).offset(offset).limit(limit).all()
+    lots = (
+        query
+        .order_by(ParkingLot.condition_score.asc().nullslast())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     
-    # Build response with business info
+    # Build response - no additional queries needed due to eager loading
     results = []
     for lot in lots:
         lot_dict = parking_lot_to_response(lot)
         
-        # Get primary business association
-        primary_assoc = db.query(ParkingLotBusinessAssociation).filter(
-            ParkingLotBusinessAssociation.parking_lot_id == lot.id,
-            ParkingLotBusinessAssociation.is_primary == True
-        ).first()
+        # Get primary business from already-loaded associations
+        business, assoc = get_primary_business_from_associations(lot.business_associations)
         
-        if primary_assoc:
-            business = db.query(Business).filter(Business.id == primary_assoc.business_id).first()
-            if business:
-                lot_dict["business"] = BusinessSummary(
-                    id=business.id,
-                    name=business.name,
-                    phone=business.phone,
-                    email=business.email,
-                    website=business.website,
-                    address=business.address,
-                    category=business.category,
-                )
-                lot_dict["match_score"] = float(primary_assoc.match_score)
-                lot_dict["distance_meters"] = float(primary_assoc.distance_meters)
+        if business and assoc:
+            lot_dict["business"] = BusinessSummary(
+                id=business.id,
+                name=business.name,
+                phone=business.phone,
+                email=business.email,
+                website=business.website,
+                address=business.address,
+                category=business.category,
+            )
+            lot_dict["match_score"] = float(assoc.match_score)
+            lot_dict["distance_meters"] = float(assoc.distance_meters)
         
         results.append(ParkingLotWithBusiness(**lot_dict))
     
@@ -156,53 +187,62 @@ def get_parking_lots_for_map(
     """
     Get parking lots optimized for map display.
     
+    Uses PostGIS spatial filtering and eager loading for optimal performance.
     Returns GeoJSON FeatureCollection.
     """
-    query = db.query(ParkingLot).filter(ParkingLot.user_id == current_user.id)
+    # Base query with eager loading - single query for all data
+    query = (
+        db.query(ParkingLot)
+        .filter(ParkingLot.user_id == current_user.id)
+        .options(
+            selectinload(ParkingLot.business_associations)
+            .joinedload(ParkingLotBusinessAssociation.business)
+        )
+    )
     
-    # Apply bounding box filter if provided
-    # Note: For proper spatial filtering, use PostGIS ST_Within
-    # This is a simplified version
+    # Apply PostGIS bounding box filter if all bounds provided
+    if all(v is not None for v in [min_lat, max_lat, min_lng, max_lng]):
+        # Use PostGIS ST_MakeEnvelope for efficient spatial filtering
+        # ST_MakeEnvelope(xmin, ymin, xmax, ymax, srid)
+        envelope = func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326)
+        query = query.filter(
+            func.ST_Intersects(
+                func.ST_SetSRID(ParkingLot.centroid, 4326),
+                envelope
+            )
+        )
     
     if max_condition_score is not None:
         query = query.filter(ParkingLot.condition_score <= max_condition_score)
     
+    if has_business is not None:
+        if has_business:
+            subquery = (
+                db.query(ParkingLotBusinessAssociation.parking_lot_id)
+                .filter(ParkingLotBusinessAssociation.is_primary == True)
+                .subquery()
+            )
+            query = query.filter(ParkingLot.id.in_(db.query(subquery)))
+        else:
+            subquery = (
+                db.query(ParkingLotBusinessAssociation.parking_lot_id)
+                .filter(ParkingLotBusinessAssociation.is_primary == True)
+                .subquery()
+            )
+            query = query.filter(~ParkingLot.id.in_(db.query(subquery)))
+    
+    # Limit results for map display
     lots = query.limit(500).all()
     
+    # Build features - no additional queries due to eager loading
     features = []
     for lot in lots:
         centroid = to_shape(lot.centroid)
         
-        # Check bounding box
-        if min_lat is not None and centroid.y < min_lat:
-            continue
-        if max_lat is not None and centroid.y > max_lat:
-            continue
-        if min_lng is not None and centroid.x < min_lng:
-            continue
-        if max_lng is not None and centroid.x > max_lng:
-            continue
-        
-        # Get business name if associated
-        business_name = None
-        has_biz = False
-        
-        primary_assoc = db.query(ParkingLotBusinessAssociation).filter(
-            ParkingLotBusinessAssociation.parking_lot_id == lot.id,
-            ParkingLotBusinessAssociation.is_primary == True
-        ).first()
-        
-        if primary_assoc:
-            has_biz = True
-            business = db.query(Business).filter(Business.id == primary_assoc.business_id).first()
-            if business:
-                business_name = business.name
-        
-        if has_business is not None:
-            if has_business and not has_biz:
-                continue
-            if not has_business and has_biz:
-                continue
+        # Get business from already-loaded associations
+        business, _ = get_primary_business_from_associations(lot.business_associations)
+        business_name = business.name if business else None
+        has_biz = business is not None
         
         features.append({
             "type": "Feature",
@@ -238,10 +278,18 @@ def get_parking_lot(
     db: Session = Depends(get_db)
 ):
     """Get single parking lot with full details."""
-    lot = db.query(ParkingLot).filter(
-        ParkingLot.id == parking_lot_id,
-        ParkingLot.user_id == current_user.id
-    ).first()
+    lot = (
+        db.query(ParkingLot)
+        .filter(
+            ParkingLot.id == parking_lot_id,
+            ParkingLot.user_id == current_user.id
+        )
+        .options(
+            selectinload(ParkingLot.business_associations)
+            .joinedload(ParkingLotBusinessAssociation.business)
+        )
+        .first()
+    )
     
     if not lot:
         raise HTTPException(status_code=404, detail="Parking lot not found")
@@ -252,26 +300,76 @@ def get_parking_lot(
     response["evaluation_error"] = lot.evaluation_error
     response["updated_at"] = lot.updated_at
     
-    # Include primary business association if available
-    primary_assoc = db.query(ParkingLotBusinessAssociation).filter(
-        ParkingLotBusinessAssociation.parking_lot_id == parking_lot_id,
-        ParkingLotBusinessAssociation.is_primary == True
+    # Get primary business from already-loaded associations
+    business, assoc = get_primary_business_from_associations(lot.business_associations)
+    
+    if business and assoc:
+        response["business"] = BusinessSummary(
+            id=business.id,
+            name=business.name,
+            phone=business.phone,
+            email=business.email,
+            website=business.website,
+            address=business.address,
+            category=business.category,
+        )
+        response["match_score"] = float(assoc.match_score)
+        response["distance_meters"] = float(assoc.distance_meters)
+    
+    # Get property analysis if exists
+    property_analysis = db.query(PropertyAnalysis).filter(
+        PropertyAnalysis.parking_lot_id == parking_lot_id
     ).first()
     
-    if primary_assoc:
-        business = db.query(Business).filter(Business.id == primary_assoc.business_id).first()
-        if business:
-            response["business"] = BusinessSummary(
-                id=business.id,
-                name=business.name,
-                phone=business.phone,
-                email=business.email,
-                website=business.website,
-                address=business.address,
-                category=business.category,
-            )
-            response["match_score"] = float(primary_assoc.match_score)
-            response["distance_meters"] = float(primary_assoc.distance_meters)
+    if property_analysis:
+        # Debug logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"📸 PropertyAnalysis found for {parking_lot_id}")
+        logger.info(f"   wide_image_base64: {len(property_analysis.wide_image_base64) if property_analysis.wide_image_base64 else 0} chars")
+        logger.info(f"   segmentation_image_base64: {len(property_analysis.segmentation_image_base64) if property_analysis.segmentation_image_base64 else 0} chars")
+        logger.info(f"   property_boundary_source: {property_analysis.property_boundary_source}")
+        
+        # Build property boundary info if available
+        property_boundary_info = None
+        if property_analysis.property_boundary_source:
+            property_boundary_info = {
+                "source": property_analysis.property_boundary_source,
+                "parcel_id": property_analysis.property_parcel_id,
+                "owner": property_analysis.property_owner,
+                "apn": property_analysis.property_apn,
+                "land_use": property_analysis.property_land_use,
+                "zoning": property_analysis.property_zoning,
+            }
+            # Add polygon as GeoJSON if available
+            if property_analysis.property_boundary_polygon:
+                boundary_shape = to_shape(property_analysis.property_boundary_polygon)
+                if hasattr(boundary_shape, 'exterior'):
+                    property_boundary_info["polygon"] = {
+                        "type": "Polygon",
+                        "coordinates": [list(boundary_shape.exterior.coords)]
+                    }
+        
+        response["property_analysis"] = {
+            "id": str(property_analysis.id),
+            "status": property_analysis.status,
+            "total_asphalt_area_m2": property_analysis.total_asphalt_area_m2,
+            "weighted_condition_score": property_analysis.weighted_condition_score,
+            "total_crack_count": int(property_analysis.total_crack_count) if property_analysis.total_crack_count else 0,
+            "total_pothole_count": int(property_analysis.total_pothole_count) if property_analysis.total_pothole_count else 0,
+            "images": {
+                "wide_satellite": property_analysis.wide_image_base64,
+                "segmentation": property_analysis.segmentation_image_base64,
+                "property_boundary": property_analysis.property_boundary_image_base64,
+                "condition_analysis": property_analysis.condition_analysis_image_base64,
+            },
+            "analyzed_at": property_analysis.analyzed_at.isoformat() if property_analysis.analyzed_at else None,
+            "property_boundary": property_boundary_info,
+        }
+    else:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"📸 No PropertyAnalysis found for {parking_lot_id}")
     
     return ParkingLotDetailResponse(**response)
 
@@ -291,13 +389,18 @@ def get_parking_lot_businesses(
     if not lot:
         raise HTTPException(status_code=404, detail="Parking lot not found")
     
-    associations = db.query(ParkingLotBusinessAssociation).filter(
-        ParkingLotBusinessAssociation.parking_lot_id == parking_lot_id
-    ).order_by(ParkingLotBusinessAssociation.match_score.desc()).all()
+    # Use eager loading for associations and businesses
+    associations = (
+        db.query(ParkingLotBusinessAssociation)
+        .filter(ParkingLotBusinessAssociation.parking_lot_id == parking_lot_id)
+        .options(joinedload(ParkingLotBusinessAssociation.business))
+        .order_by(ParkingLotBusinessAssociation.match_score.desc())
+        .all()
+    )
     
     results = []
     for assoc in associations:
-        business = db.query(Business).filter(Business.id == assoc.business_id).first()
+        business = assoc.business
         if business:
             biz_location = to_shape(business.geometry)
             results.append({
@@ -315,4 +418,3 @@ def get_parking_lot_businesses(
             })
     
     return results
-

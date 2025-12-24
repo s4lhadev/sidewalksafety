@@ -21,7 +21,8 @@ export const evaluationsApi = {
   },
 
   getDealWithEvaluation: async (dealId: string): Promise<DealWithEvaluation> => {
-    const { data } = await apiClient.get<DealWithEvaluation>(`/evaluations/${dealId}`)
+    // Use parking-lots endpoint which includes property_analysis with images
+    const { data } = await apiClient.get<DealWithEvaluation>(`/parking-lots/${dealId}`)
     return data
   },
 }

@@ -29,10 +29,30 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
     
+    # Property Parcel Data (Regrid API)
+    # API docs: https://regrid.com/api
+    REGRID_API_KEY: Optional[str] = None
+    REGRID_API_URL: str = "https://app.regrid.com/api/v2"
+    
     # Computer Vision (Roboflow hosted API)
     # API docs: https://docs.roboflow.com/deploy/serverless/object-detection
     ROBOFLOW_API_KEY: Optional[str] = None
     ROBOFLOW_MODEL_ID: str = "pavement-crack-detection-r4n7n/1"
+    
+    # Stage 1 CV - Property Segmentation (buildings + paved surfaces)
+    # Tested working models (via Roboflow SDK):
+    # - ics483/satellite-building-segmentation/2 (classes: building, road)
+    # - conversion-qmb4v/aerial-segmentation-3/1 (classes: building, road, vegetation)
+    ROBOFLOW_SEGMENTATION_MODEL: str = "ics483/satellite-building-segmentation/2"
+    
+    # Image Storage
+    CV_IMAGE_STORAGE_TYPE: str = "local"  # "local", "s3", "supabase"
+    CV_IMAGE_STORAGE_PATH: str = "./storage/cv_images"
+    CV_IMAGE_BASE_URL: str = "/api/v1/images"
+    
+    # Wide image settings for property analysis
+    WIDE_IMAGE_RADIUS_METERS: float = 150.0  # Radius around business for wide image
+    WIDE_IMAGE_SIZE: int = 640  # Image dimension (640x640)
     
     # Security
     SECRET_KEY: str = ""

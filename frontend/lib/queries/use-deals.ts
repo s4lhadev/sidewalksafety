@@ -3,11 +3,23 @@ import { dealsApi } from '../api/deals'
 import { GeographicSearchRequest } from '@/types'
 import { toast } from '@/hooks/use-toast'
 
+// Stale time: 30 seconds - data is considered fresh for 30s
+const STALE_TIME = 30 * 1000
+
+// Cache time: 5 minutes - keep data in cache for 5 minutes after it becomes stale
+const CACHE_TIME = 5 * 60 * 1000
+
+// Refetch interval: 60 seconds - only refetch if window is focused
+const REFETCH_INTERVAL = 60 * 1000
+
 export function useDeals(status?: string) {
   return useQuery({
     queryKey: ['deals', status],
     queryFn: () => dealsApi.getDeals(status),
-    refetchInterval: 10000, // Refetch every 10s to get new discoveries
+    staleTime: STALE_TIME,
+    gcTime: CACHE_TIME,
+    refetchInterval: REFETCH_INTERVAL,
+    refetchIntervalInBackground: false, // Don't refetch when tab is not visible
   })
 }
 
@@ -16,20 +28,28 @@ export function useDeal(id: string) {
     queryKey: ['deals', id],
     queryFn: () => dealsApi.getDeal(id),
     enabled: !!id,
+    staleTime: STALE_TIME,
+    gcTime: CACHE_TIME,
   })
 }
 
-export function useDealsForMap(params?: {
-  min_lat?: number
-  max_lat?: number
-  min_lng?: number
-  max_lng?: number
-  status?: string
-}) {
+export interface MapBounds {
+  minLat?: number
+  maxLat?: number
+  minLng?: number
+  maxLng?: number
+}
+
+export function useDealsForMap(params?: MapBounds & { status?: string }) {
   return useQuery({
     queryKey: ['deals', 'map', params],
     queryFn: () => dealsApi.getDealsForMap(params),
-    refetchInterval: 10000, // Refetch every 10s to get new discoveries
+    staleTime: STALE_TIME,
+    gcTime: CACHE_TIME,
+    refetchInterval: REFETCH_INTERVAL,
+    refetchIntervalInBackground: false,
+    // Keep previous data while fetching new bounds
+    placeholderData: (previousData) => previousData,
   })
 }
 

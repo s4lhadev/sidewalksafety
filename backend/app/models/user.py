@@ -23,3 +23,4 @@ class User(Base):
     parking_lots = relationship("ParkingLot", back_populates="user", cascade="all, delete-orphan")
     deals = relationship("Deal", back_populates="user", cascade="all, delete-orphan")
     usage_logs = relationship("UsageLog", back_populates="user", cascade="all, delete-orphan")
+    property_analyses = relationship("PropertyAnalysis", back_populates="user", cascade="all, delete-orphan")

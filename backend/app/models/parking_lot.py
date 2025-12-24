@@ -65,6 +65,7 @@ class ParkingLot(Base):
     user = relationship("User", back_populates="parking_lots")
     business_associations = relationship("ParkingLotBusinessAssociation", back_populates="parking_lot", cascade="all, delete-orphan")
     deals = relationship("Deal", back_populates="parking_lot", cascade="all, delete-orphan")
+    property_analysis = relationship("PropertyAnalysis", back_populates="parking_lot", uselist=False)
 
     # Indexes for spatial queries
     __table_args__ = (
