@@ -37,7 +37,7 @@ async def get_business_type_options():
                 "id": "premium",
                 "label": "Premium (High Success Rate)",
                 "icon": "trophy",
-                "description": "HOAs, apartments - almost always have parking lots",
+                "description": "Apartments, condos, mobile homes - actual properties with parking",
                 "types": BUSINESS_TYPE_OPTIONS["premium"],
             },
             {
@@ -116,6 +116,11 @@ async def start_discovery(
     # Create job
     job_id = uuid4()
     filters = request.filters or DiscoveryFilters()
+    
+    # Override max_lots if max_results is provided in request
+    if request.max_results:
+        filters.max_lots = request.max_results
+        filters.max_businesses = request.max_results
     
     # Initialize job status BEFORE starting background task (so status endpoint works immediately)
     discovery_orchestrator.initialize_job(job_id, current_user.id)

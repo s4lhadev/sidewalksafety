@@ -103,11 +103,11 @@ export default function DashboardPage() {
     }
   }, [])
 
-  const handleDiscover = (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => {
+  const handleDiscover = (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[], maxResults?: number) => {
     scrapeDeals.mutate({
       area_type: type, value,
       state: type === 'county' ? state : undefined,
-      max_deals: type === 'zip' ? 10 : 30,
+      max_results: maxResults || (type === 'zip' ? 10 : 30),
       business_type_ids: businessTypeIds,
     }, { onSuccess: () => setClickedLocation(null) })
   }

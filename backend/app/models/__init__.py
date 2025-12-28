@@ -7,6 +7,7 @@ from app.models.usage_log import UsageLog
 from app.models.property_analysis import PropertyAnalysis
 from app.models.asphalt_area import AsphaltArea
 from app.models.cv_image import CVImage
+from app.models.analysis_tile import AnalysisTile
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "PropertyAnalysis",
     "AsphaltArea",
     "CVImage",
+    "AnalysisTile",
 ]

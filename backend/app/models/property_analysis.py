@@ -61,11 +61,63 @@ class PropertyAnalysis(Base):
     condition_analysis_image_url = Column(Text, nullable=True)
     condition_analysis_image_base64 = Column(Text, nullable=True)  # Base64 encoded
     
-    # Aggregated metrics
-    total_asphalt_area_m2 = Column(Float, nullable=True)
+    # Aggregated metrics (from tile analysis)
+    total_asphalt_area_m2 = Column(Float, nullable=True)  # Total from CV (includes public roads)
+    total_asphalt_area_sqft = Column(Float, nullable=True)
+    parking_area_m2 = Column(Float, nullable=True)
+    parking_area_sqft = Column(Float, nullable=True)
+    road_area_m2 = Column(Float, nullable=True)
+    road_area_sqft = Column(Float, nullable=True)
+    
+    # ============ SURFACE TYPE BREAKDOWN (NEW - Grounded SAM) ============
+    # Asphalt surfaces (dark pavement)
+    private_asphalt_area_m2 = Column(Float, nullable=True)
+    private_asphalt_area_sqft = Column(Float, nullable=True)
+    private_asphalt_geojson = Column(JSONB, nullable=True)  # Merged GeoJSON for display
+    
+    # Concrete surfaces (light pavement)
+    concrete_area_m2 = Column(Float, nullable=True)
+    concrete_area_sqft = Column(Float, nullable=True)
+    concrete_geojson = Column(JSONB, nullable=True)
+    
+    # Total paved (asphalt + concrete)
+    total_paved_area_m2 = Column(Float, nullable=True)
+    total_paved_area_sqft = Column(Float, nullable=True)
+    
+    # All surfaces GeoJSON (FeatureCollection with all types)
+    surfaces_geojson = Column(JSONB, nullable=True)
+    
+    # Buildings detected
+    building_area_m2 = Column(Float, nullable=True)
+    building_geojson = Column(JSONB, nullable=True)
+    
+    # Public roads that were filtered out
+    public_road_area_m2 = Column(Float, nullable=True)
+    
+    # Detection method
+    detection_method = Column(String(50), nullable=True)  # "grounded_sam", "legacy_cv"
+    
     weighted_condition_score = Column(Float, nullable=True)  # 0-100, area-weighted average
+    worst_tile_score = Column(Float, nullable=True)
+    best_tile_score = Column(Float, nullable=True)
     total_crack_count = Column(Numeric, nullable=True)
     total_pothole_count = Column(Numeric, nullable=True)
+    total_detection_count = Column(Numeric, nullable=True)
+    damage_density = Column(Float, nullable=True)  # Detections per 1000 sqft
+    
+    # Tile-based analysis info
+    analysis_type = Column(String(50), nullable=True)  # "single", "tiled"
+    total_tiles = Column(Numeric, nullable=True)
+    analyzed_tiles = Column(Numeric, nullable=True)
+    tiles_with_asphalt = Column(Numeric, nullable=True)
+    tiles_with_damage = Column(Numeric, nullable=True)
+    tile_zoom_level = Column(Numeric, nullable=True)
+    tile_grid_rows = Column(Numeric, nullable=True)
+    tile_grid_cols = Column(Numeric, nullable=True)
+    
+    # Lead quality scoring
+    lead_quality = Column(String(50), nullable=True)  # "premium", "high", "standard", "low"
+    hotspot_count = Column(Numeric, nullable=True)
     
     # Status
     status = Column(String(50), default="pending", nullable=False)  # pending, processing, completed, failed
@@ -82,4 +134,5 @@ class PropertyAnalysis(Base):
     business = relationship("Business", back_populates="property_analyses")
     asphalt_areas = relationship("AsphaltArea", back_populates="property_analysis", cascade="all, delete-orphan")
     cv_images = relationship("CVImage", back_populates="property_analysis", cascade="all, delete-orphan")
+    tiles = relationship("AnalysisTile", back_populates="property_analysis", cascade="all, delete-orphan")
 

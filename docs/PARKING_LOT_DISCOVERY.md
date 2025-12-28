@@ -123,7 +123,7 @@ apiKey: {HERE_API_KEY}
 - Detailed metadata
 - Coverage: ~70-80% of parking lots
 
-#### C. OpenStreetMap Overpass API
+#### C. StreetMap Overpass API
 
 **Request:**
 ```http

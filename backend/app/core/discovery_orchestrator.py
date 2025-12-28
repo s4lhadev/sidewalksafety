@@ -27,10 +27,10 @@ from app.core.business_first_discovery_service import (
 from app.core.parking_lot_finder_service import parking_lot_finder_service
 from app.core.config import settings
 
-# NEW: Two-stage CV pipeline services
-from app.core.asphalt_segmentation_service import asphalt_segmentation_service
-from app.core.property_association_service import property_association_service
-from app.core.cv_visualization_service import cv_visualization_service
+# NEW: Smart two-phase analysis pipeline
+from app.core.smart_analysis_pipeline import smart_analysis_pipeline
+from app.core.tile_pipeline import tile_pipeline
+from app.core.tile_service import tile_service
 from app.core.regrid_service import regrid_service
 from app.models.property_analysis import PropertyAnalysis
 from app.models.asphalt_area import AsphaltArea
@@ -335,7 +335,7 @@ class DiscoveryOrchestrator:
             radius_meters=radius_meters,
             tiers=tier_enums,
             business_type_ids=business_type_ids,
-            max_per_tier=20,
+            max_per_tier=max(5, filters.max_lots // 3),  # Distribute across tiers
             max_total=filters.max_lots,
         )
         
@@ -345,7 +345,7 @@ class DiscoveryOrchestrator:
         standard_count = len([b for b in discovered_businesses if b.tier == BusinessTier.STANDARD])
         
         logger.info(f"   ✅ Found {len(discovered_businesses)} businesses:")
-        logger.info(f"      🏆 Premium (HOA/Apartments): {premium_count}")
+        logger.info(f"      🏆 Premium (Apartments/Condos): {premium_count}")
         logger.info(f"      ⭐ High (Shopping/Hotels): {high_count}")
         logger.info(f"      📍 Standard (Other): {standard_count}")
         
@@ -369,7 +369,7 @@ class DiscoveryOrchestrator:
             try:
                 logger.info(f"   [{idx+1}/{len(discovered_businesses)}] {business.name} ({business.tier.value})")
                 
-                # Find parking lot near business
+                # Find parking lot near business (for initial estimate)
                 found_lot = await parking_lot_finder_service.find_parking_lot(
                     business_lat=business.latitude,
                     business_lng=business.longitude,
@@ -437,255 +437,89 @@ class DiscoveryOrchestrator:
                     is_primary=True,
                 )
                 db.add(association)
+                db.flush()
                 
                 processed_count += 1
                 
-                # ============ Step 3: NEW - Get Property Boundary from Regrid ============
-                logger.info(f"      🗺️  Fetching property boundary from Regrid...")
+                # ============ Step 1: Get Property Boundary from Regrid ============
+                # Use ADDRESS-based lookup (more accurate than point lookup)
+                logger.info(f"      🗺️  Fetching property boundary from Regrid by ADDRESS...")
                 
-                property_parcel = None
-                property_boundary_source = "estimated"
+                property_boundary = None
+                regrid_parcel = None
                 
-                if regrid_service.is_configured:
-                    # Try to get parcel by coordinates first
-                    property_parcel = await regrid_service.get_parcel_by_coordinates(
+                try:
+                    # Use address search with coordinates as fallback
+                    regrid_parcel = await regrid_service.get_parcel_by_address(
+                        address=business.address,
+                        fallback_lat=business.latitude,
+                        fallback_lng=business.longitude
+                    )
+                    
+                    if regrid_parcel and regrid_parcel.has_valid_geometry:
+                        property_boundary = regrid_parcel.polygon
+                        logger.info(f"      ✅ Got Regrid boundary: {regrid_parcel.area_m2:,.0f} m²")
+                        logger.info(f"         Owner: {regrid_parcel.owner}")
+                        logger.info(f"         Regrid Address: {regrid_parcel.address}")
+                        logger.info(f"         Business Address: {business.address[:50]}...")
+                    else:
+                        logger.warning(f"      ⚠️ No Regrid parcel found - will estimate boundary")
+                except Exception as e:
+                    logger.warning(f"      ⚠️ Regrid lookup failed: {e} - will estimate boundary")
+                
+                # ============ Step 2: Run Smart Two-Phase Analysis Pipeline ============
+                logger.info(f"      🎯 Running smart analysis pipeline (Phase 1: Detect Asphalt, Phase 2: Detect Damage)...")
+                
+                # Use smart pipeline if we have a property boundary
+                if property_boundary:
+                    smart_result = await smart_analysis_pipeline.analyze_property(
+                        db=db,
+                        property_boundary=property_boundary,
+                        regrid_parcel=regrid_parcel,
                         lat=business.latitude,
-                        lng=business.longitude
+                        lng=business.longitude,
+                        user_id=user_id,
+                        business_id=db_business.id,
+                        parking_lot_id=db_lot.id,
+                        business_name=business.name,
+                        address=business.address,
                     )
                     
-                    # If not found, try by address
-                    if not property_parcel and business.address:
-                        property_parcel = await regrid_service.get_parcel_by_address(
-                            address=business.address
-                        )
-                    
-                    if property_parcel:
-                        property_boundary_source = "regrid"
-                        logger.info(f"      ✅ Property boundary from Regrid: {property_parcel.area_m2:.0f} m²")
-                        if property_parcel.owner:
-                            logger.info(f"         Owner: {property_parcel.owner[:50]}...")
-                    else:
-                        logger.warning(f"      ⚠️ No property boundary from Regrid, will use CV fallback")
-                else:
-                    logger.warning(f"      ⚠️ Regrid not configured, using CV-based boundary detection")
-                
-                # ============ Step 4: Fetch WIDE satellite image ============
-                logger.info(f"      🛰️  Fetching WIDE satellite image (150m radius)...")
-                
-                wide_image, image_bounds = await self._fetch_wide_satellite_image(
-                    business.latitude, business.longitude
-                )
-                
-                if wide_image:
-                    logger.info(f"      ✅ Wide image fetched: {len(wide_image)/1024:.1f} KB")
-                    
-                    # ============ Step 5: Run segmentation for asphalt detection ============
-                    logger.info(f"      🔍 Running CV: Asphalt Segmentation...")
-                    segmentation = await asphalt_segmentation_service.segment_property(
-                        image_bytes=wide_image,
-                        image_bounds=image_bounds
-                    )
-                    
-                    logger.info(f"         Detected {len(segmentation.buildings)} buildings, {len(segmentation.paved_surfaces)} paved surfaces")
-                    
-                    # ============ Step 6: Associate asphalt with property ============
-                    # If we have Regrid boundary, use it to filter asphalt areas
-                    # Otherwise, use the old proximity-based association
-                    logger.info(f"      🔗 Associating asphalt with property (source: {property_boundary_source})...")
-                    
-                    if property_parcel:
-                        # Filter segmented areas to only those within property boundary
-                        business_building, associated_areas = property_association_service.associate_with_property_boundary(
-                            buildings=segmentation.buildings,
-                            paved_surfaces=segmentation.paved_surfaces,
-                            property_boundary=property_parcel.polygon,
-                            business_location=(business.latitude, business.longitude)
-                        )
-                    else:
-                        # Fallback: use proximity-based association
-                        business_building, associated_areas = property_association_service.associate_with_business(
-                            buildings=segmentation.buildings,
-                            paved_surfaces=segmentation.paved_surfaces,
-                            business_location=(business.latitude, business.longitude)
-                        )
-                    
-                    associated_count = sum(1 for a in associated_areas if a.is_associated)
-                    total_area = sum(a.area_m2 for a in associated_areas if a.is_associated)
-                    logger.info(f"         Associated {associated_count} areas, total {total_area:.0f} m²")
-                    
-                    # Stage 4: Evaluate condition on associated areas
-                    logger.info(f"      🔬 Running Stage 2 CV: Condition evaluation...")
-                    condition_results = []
-                    total_cracks = 0
-                    total_potholes = 0
-                    
-                    for area in associated_areas:
-                        if area.is_associated:
-                            # Run condition evaluation on the whole wide image for now
-                            # In production, we'd crop to each polygon
-                            eval_result = await condition_evaluation_service.evaluate_condition(
-                                image_bytes=wide_image,
-                                parking_lot_id=str(db_lot.id)
-                            )
-                            
-                            if eval_result:
-                                from app.core.cv_visualization_service import ConditionResult
-                                condition_results.append(ConditionResult(
-                                    area=area,
-                                    condition_score=eval_result.get("condition_score", 100),
-                                    crack_count=eval_result.get("detection_count", 0),
-                                    pothole_count=len([d for d in eval_result.get("degradation_areas", []) if "pothole" in d.get("class", "").lower()]),
-                                    crack_density=eval_result.get("crack_density", 0),
-                                    detections=eval_result.get("degradation_areas", [])
-                                ))
-                                total_cracks += eval_result.get("detection_count", 0)
-                            break  # Only evaluate once for now
-                    
-                    # Calculate weighted condition score
-                    if condition_results and total_area > 0:
-                        weighted_score = sum(
-                            r.condition_score * r.area.area_m2 
-                            for r in condition_results if r.condition_score
-                        ) / total_area
-                    else:
-                        weighted_score = 100
-                    
-                    logger.info(f"         Condition score: {weighted_score:.1f}/100, {total_cracks} cracks, {total_potholes} potholes")
-                    
-                    # Stage 5: Generate annotated images
-                    logger.info(f"      🎨 Generating annotated images...")
-                    annotated_images = await cv_visualization_service.generate_all_images(
-                        original_image=wide_image,
-                        segmentation=segmentation,
-                        business_building=business_building,
-                        associated_areas=associated_areas,
-                        condition_results=condition_results
-                    )
-                    
-                    # Stage 6: Store images as base64 and create/update PropertyAnalysis record
-                    analysis_id = db_lot.id  # Use same ID for simplicity
-                    
-                    # Convert images to base64
-                    import base64
-                    wide_satellite_b64 = base64.b64encode(wide_image).decode('utf-8') if wide_image else None
-                    segmentation_b64 = base64.b64encode(annotated_images.segmentation).decode('utf-8') if annotated_images.segmentation else None
-                    property_boundary_b64 = base64.b64encode(annotated_images.property_boundary).decode('utf-8') if annotated_images.property_boundary else None
-                    condition_analysis_b64 = base64.b64encode(annotated_images.condition_analysis).decode('utf-8') if annotated_images.condition_analysis else None
-                    
-                    logger.info(f"      💾 Encoded 4 images as base64")
-                    logger.info(f"         wide_satellite: {len(wide_satellite_b64) if wide_satellite_b64 else 0} chars")
-                    logger.info(f"         segmentation: {len(segmentation_b64) if segmentation_b64 else 0} chars")
-                    
-                    # Check if PropertyAnalysis already exists (update) or create new
-                    existing_analysis = db.query(PropertyAnalysis).filter(
+                    # Convert smart result to property_analysis format for compatibility
+                    property_analysis = db.query(PropertyAnalysis).filter(
                         PropertyAnalysis.parking_lot_id == db_lot.id
                     ).first()
-                    
-                    if existing_analysis:
-                        # Update existing record
-                        logger.info(f"      📝 Updating existing PropertyAnalysis {existing_analysis.id}")
-                        existing_analysis.business_id = db_business.id
-                        existing_analysis.business_location = from_shape(business.location, srid=4326)
-                        existing_analysis.wide_image_base64 = wide_satellite_b64
-                        existing_analysis.wide_image_bounds = image_bounds
-                        existing_analysis.segmentation_model_id = settings.ROBOFLOW_SEGMENTATION_MODEL
-                        existing_analysis.segmentation_image_base64 = segmentation_b64
-                        existing_analysis.property_boundary_image_base64 = property_boundary_b64
-                        existing_analysis.condition_analysis_image_base64 = condition_analysis_b64
-                        existing_analysis.raw_segmentation_data = segmentation.raw_response
-                        existing_analysis.total_asphalt_area_m2 = total_area
-                        existing_analysis.weighted_condition_score = weighted_score
-                        existing_analysis.total_crack_count = total_cracks
-                        existing_analysis.total_pothole_count = total_potholes
-                        existing_analysis.status = "completed"
-                        existing_analysis.analyzed_at = datetime.utcnow()
-                        
-                        # Store Regrid property boundary data
-                        existing_analysis.property_boundary_source = property_boundary_source
-                        if property_parcel:
-                            existing_analysis.property_boundary_polygon = from_shape(property_parcel.polygon, srid=4326)
-                            existing_analysis.property_parcel_id = property_parcel.parcel_id
-                            existing_analysis.property_owner = property_parcel.owner
-                            existing_analysis.property_apn = property_parcel.apn
-                            existing_analysis.property_land_use = property_parcel.land_use
-                            existing_analysis.property_zoning = property_parcel.zoning
-                        
-                        property_analysis = existing_analysis
-                        
-                        # Delete old asphalt areas
-                        db.query(AsphaltArea).filter(
-                            AsphaltArea.property_analysis_id == existing_analysis.id
-                        ).delete()
-                    else:
-                        # Create new PropertyAnalysis record
-                        logger.info(f"      ➕ Creating new PropertyAnalysis {analysis_id}")
-                        property_analysis = PropertyAnalysis(
-                            id=analysis_id,
-                            parking_lot_id=db_lot.id,
-                            business_id=db_business.id,
-                            user_id=user_id,
-                            business_location=from_shape(business.location, srid=4326),
-                            wide_image_base64=wide_satellite_b64,
-                            wide_image_bounds=image_bounds,
-                            segmentation_model_id=settings.ROBOFLOW_SEGMENTATION_MODEL,
-                            segmentation_image_base64=segmentation_b64,
-                            property_boundary_image_base64=property_boundary_b64,
-                            condition_analysis_image_base64=condition_analysis_b64,
-                            raw_segmentation_data=segmentation.raw_response,
-                            total_asphalt_area_m2=total_area,
-                            weighted_condition_score=weighted_score,
-                            total_crack_count=total_cracks,
-                            total_pothole_count=total_potholes,
-                            status="completed",
-                            analyzed_at=datetime.utcnow(),
-                            # Regrid property boundary data
-                            property_boundary_source=property_boundary_source,
-                            property_boundary_polygon=from_shape(property_parcel.polygon, srid=4326) if property_parcel else None,
-                            property_parcel_id=property_parcel.parcel_id if property_parcel else None,
-                            property_owner=property_parcel.owner if property_parcel else None,
-                            property_apn=property_parcel.apn if property_parcel else None,
-                            property_land_use=property_parcel.land_use if property_parcel else None,
-                            property_zoning=property_parcel.zoning if property_parcel else None,
-                        )
-                        db.add(property_analysis)
-                    
-                    # Create AsphaltArea records
-                    for area in associated_areas:
-                        condition = next((r for r in condition_results if r.area == area), None)
-                        
-                        asphalt_area = AsphaltArea(
-                            property_analysis_id=analysis_id,
-                            polygon=from_shape(area.polygon, srid=4326),
-                            centroid=from_shape(area.polygon.centroid, srid=4326),
-                            area_m2=area.area_m2,
-                            pixel_coordinates=area.pixel_points,
-                            area_type=area.area_type,
-                            segmentation_confidence=area.confidence,
-                            segmentation_class=area.class_name,
-                            is_associated=area.is_associated,
-                            association_reason=area.association_reason,
-                            distance_to_building_m=area.distance_to_building_m,
-                            condition_score=condition.condition_score if condition else None,
-                            crack_count=condition.crack_count if condition else None,
-                            pothole_count=condition.pothole_count if condition else None,
-                            crack_density=condition.crack_density if condition else None,
-                            detections=condition.detections if condition else None,
-                        )
-                        db.add(asphalt_area)
-                    
-                    # Update parking lot with results
-                    # satellite_image_url is now handled by property_analysis.images
-                    db_lot.satellite_image_url = None  # Images stored in PropertyAnalysis
-                    db_lot.condition_score = weighted_score
-                    db_lot.area_m2 = total_area if total_area > 0 else found_lot.area_m2
+                else:
+                    # Fallback to old tile pipeline if no boundary
+                    logger.warning(f"      ⚠️ No property boundary - falling back to tile pipeline")
+                    property_analysis = await tile_pipeline.analyze_property(
+                        db=db,
+                        lat=business.latitude,
+                        lng=business.longitude,
+                        user_id=user_id,
+                        business_id=db_business.id,
+                        parking_lot_id=db_lot.id,
+                        business_name=business.name,
+                        address=business.address,
+                        property_type=business.business_type,
+                        property_boundary=property_boundary,
+                        regrid_parcel=regrid_parcel,
+                        min_zoom=18,
+                        max_zoom=20
+                    )
+                
+                if property_analysis and property_analysis.status == "completed":
+                    # Update parking lot with aggregated results
+                    db_lot.condition_score = property_analysis.weighted_condition_score
+                    db_lot.area_m2 = property_analysis.total_asphalt_area_m2 or found_lot.area_m2
                     db_lot.is_evaluated = True
                     db_lot.evaluated_at = datetime.utcnow()
-                    db_lot.degradation_areas = [
-                        {"class": d.get("class"), "confidence": d.get("confidence"), "x": d.get("x"), "y": d.get("y")}
-                        for r in condition_results for d in r.detections
-                    ] if condition_results else None
+                    db_lot.evaluation_status = "completed"
                     
-                    logger.info(f"      ✅ Two-Stage CV Complete: {associated_count} areas, {total_area:.0f}m², score={weighted_score:.0f}/100")
+                    evaluated_count += 1
+                    
+                    logger.info(f"      ✅ Analysis complete: {property_analysis.total_asphalt_area_sqft:,.0f} sqft, score={property_analysis.weighted_condition_score:.0f}/100")
+                    logger.info(f"         Lead quality: {property_analysis.lead_quality.upper() if property_analysis.lead_quality else 'N/A'}")
                     
                     # Log CV usage
                     usage_tracking_service.log_cv_evaluation(
@@ -693,15 +527,14 @@ class DiscoveryOrchestrator:
                         user_id=user_id,
                         parking_lot_id=db_lot.id,
                         job_id=job_id,
-                        bytes_processed=len(wide_image),
+                        bytes_processed=0,  # Tracked internally by tile pipeline
                         evaluation_time_seconds=0,
-                        detections=total_cracks,
+                        detections=int(property_analysis.total_detection_count or 0),
                     )
-                    
-                    evaluated_count += 1
                 else:
-                    logger.warning(f"      ❌ Failed to fetch wide imagery")
-                    db_lot.evaluation_error = "Failed to fetch wide imagery"
+                    logger.warning(f"      ❌ Pipeline failed: {property_analysis.error_message if property_analysis else 'Unknown error'}")
+                    db_lot.evaluation_error = property_analysis.error_message if property_analysis else "Pipeline failed"
+                    db_lot.evaluation_status = "failed"
                 
                 db.commit()
                 self._jobs[job_key]["progress"].parking_lots_evaluated = evaluated_count
@@ -711,6 +544,8 @@ class DiscoveryOrchestrator:
                 
             except Exception as e:
                 logger.error(f"      ❌ Error processing business: {e}")
+                import traceback
+                traceback.print_exc()
                 db.rollback()
         
         self._jobs[job_key]["progress"].parking_lots_found = processed_count

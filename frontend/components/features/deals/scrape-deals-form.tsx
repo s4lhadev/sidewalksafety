@@ -31,7 +31,7 @@ export function ScrapeDealsForm() {
         area_type: areaType,
         value,
         state: areaType === 'county' ? state : undefined,
-        max_deals: maxDeals,
+        max_results: maxDeals,
       },
       {
         onSuccess: () => {

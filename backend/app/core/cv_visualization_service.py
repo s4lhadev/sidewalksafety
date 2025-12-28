@@ -389,3 +389,4 @@ class CVVisualizationService:
 # Singleton instance
 cv_visualization_service = CVVisualizationService()
 
+

@@ -66,3 +66,4 @@ export function usePropertyAnalysisForDeal(dealId: string | undefined) {
   })
 }
 
+

@@ -167,10 +167,23 @@ class AsphaltSegmentationService:
                 logger.info(f"   ✅ Received {len(predictions)} predictions")
                 
                 # Parse response
-                return self._parse_segmentation_response(
+                segmentation_result = self._parse_segmentation_response(
                     {"predictions": predictions, "image": {"width": image_width, "height": image_height}},
                     image_bounds
                 )
+                
+                # If ML model found NO paved surfaces, try color-based detection
+                # This catches parking lots that the "road" class doesn't detect
+                if not segmentation_result.paved_surfaces:
+                    logger.info(f"   ⚠️ ML model found no paved surfaces - trying color-based detection")
+                    color_result = await self._color_based_detection(image_bytes, image_bounds)
+                    
+                    if color_result.paved_surfaces:
+                        # Merge: keep ML buildings, add color-detected paved surfaces
+                        segmentation_result.paved_surfaces = color_result.paved_surfaces
+                        logger.info(f"   ✅ Color detection found {len(color_result.paved_surfaces)} paved surfaces")
+                
+                return segmentation_result
                 
             finally:
                 # Clean up temp file
@@ -350,23 +363,150 @@ class AsphaltSegmentationService:
     ) -> SegmentationResult:
         """
         Fallback when segmentation model fails.
-        Creates an estimated paved surface polygon covering most of the image.
+        Uses color-based detection to find dark asphalt/paved areas.
+        """
+        return await self._color_based_detection(image_bytes, image_bounds)
+    
+    async def _color_based_detection(
+        self,
+        image_bytes: bytes,
+        image_bounds: Dict[str, float]
+    ) -> SegmentationResult:
+        """
+        Color-based detection of paved surfaces.
         
-        This allows the pipeline to continue with condition evaluation
-        even when building/road segmentation isn't available.
+        Detects dark gray/black areas that are likely asphalt parking lots.
+        This works even when the ML model fails to detect parking lots.
         """
         from PIL import Image
         from io import BytesIO
+        import numpy as np
         
         try:
-            # Get image dimensions
+            # Load image
             img = Image.open(BytesIO(image_bytes))
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
             width, height = img.size
             
-            # Create a polygon covering the center 80% of the image
-            # This is a reasonable estimate for a business parking area
-            margin = 0.1  # 10% margin on each side
+            pixels = np.array(img)
             
+            logger.info(f"   🎨 Running color-based paved surface detection...")
+            
+            # Convert to HSV for better color detection
+            # We're looking for dark gray/black (asphalt) which has low saturation and low value
+            # Also look for light gray (concrete) which has low saturation and high value
+            
+            # Calculate brightness (value) and saturation for each pixel
+            r, g, b = pixels[:,:,0], pixels[:,:,1], pixels[:,:,2]
+            max_rgb = np.maximum(np.maximum(r, g), b)
+            min_rgb = np.minimum(np.minimum(r, g), b)
+            
+            # Value (brightness) normalized to 0-255
+            value = max_rgb.astype(float)
+            
+            # Saturation (0-1)
+            saturation = np.zeros_like(value)
+            non_zero_mask = max_rgb > 0
+            saturation[non_zero_mask] = (max_rgb[non_zero_mask] - min_rgb[non_zero_mask]) / max_rgb[non_zero_mask]
+            
+            # Detect asphalt: dark (value < 120), low saturation (< 0.3)
+            # This catches dark parking lots even with cars
+            asphalt_mask = (value < 120) & (saturation < 0.3)
+            
+            # Detect concrete: medium-light (value 130-220), very low saturation (< 0.15)
+            concrete_mask = (value >= 130) & (value <= 220) & (saturation < 0.15)
+            
+            # Also include medium gray which could be either
+            medium_gray_mask = (value >= 80) & (value <= 150) & (saturation < 0.2)
+            
+            # Combined paved surface mask
+            paved_mask = asphalt_mask | concrete_mask | medium_gray_mask
+            
+            # Clean up the mask with morphological operations
+            try:
+                import cv2
+                kernel = np.ones((15, 15), np.uint8)  # Larger kernel to connect parking areas
+                paved_mask = paved_mask.astype(np.uint8) * 255
+                paved_mask = cv2.morphologyEx(paved_mask, cv2.MORPH_CLOSE, kernel)
+                paved_mask = cv2.morphologyEx(paved_mask, cv2.MORPH_OPEN, kernel)
+                
+                # Find contours
+                contours, _ = cv2.findContours(paved_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                logger.info(f"   Found {len(contours)} potential paved regions")
+                
+                paved_surfaces = []
+                min_area_pixels = width * height * 0.01  # At least 1% of image
+                
+                for contour in contours:
+                    area_pixels = cv2.contourArea(contour)
+                    if area_pixels < min_area_pixels:
+                        continue
+                    
+                    # Simplify contour to reduce points
+                    epsilon = 0.01 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    
+                    if len(approx) < 3:
+                        continue
+                    
+                    # Convert to pixel points
+                    pixel_points = [{"x": float(p[0][0]), "y": float(p[0][1])} for p in approx]
+                    
+                    # Convert to geo coordinates
+                    geo_points = self._pixel_to_geo(pixel_points, width, height, image_bounds)
+                    
+                    if len(geo_points) < 3:
+                        continue
+                    
+                    try:
+                        polygon = Polygon(geo_points)
+                        if not polygon.is_valid:
+                            polygon = polygon.buffer(0)
+                        if polygon.is_empty:
+                            continue
+                        
+                        area_m2 = self._calculate_area_m2(polygon, image_bounds)
+                        
+                        # Skip very small areas
+                        if area_m2 < 50:  # Less than 50 m²
+                            continue
+                        
+                        paved_surface = DetectedPolygon(
+                            polygon=polygon,
+                            pixel_points=pixel_points,
+                            class_name="road",  # Generic paved surface
+                            confidence=0.65,  # Moderate confidence for color detection
+                            area_m2=area_m2
+                        )
+                        paved_surfaces.append(paved_surface)
+                        
+                        logger.info(f"   ✅ Detected paved region: {area_m2:.0f}m²")
+                        
+                    except Exception as e:
+                        logger.debug(f"   Failed to create polygon: {e}")
+                        continue
+                
+                if paved_surfaces:
+                    total_area = sum(p.area_m2 or 0 for p in paved_surfaces)
+                    logger.info(f"   📊 Color detection found {len(paved_surfaces)} paved areas, total: {total_area:.0f}m²")
+                    
+                    return SegmentationResult(
+                        buildings=[],
+                        paved_surfaces=paved_surfaces,
+                        raw_response={"detection_method": "color_based"},
+                        image_width=width,
+                        image_height=height
+                    )
+                
+            except ImportError:
+                logger.warning("   OpenCV not available, using simple fallback")
+            
+            # Simple fallback if OpenCV fails or no contours found
+            logger.info(f"   📍 Using simple center-area fallback")
+            
+            margin = 0.1
             pixel_points = [
                 {"x": width * margin, "y": height * margin},
                 {"x": width * (1 - margin), "y": height * margin},
@@ -374,25 +514,20 @@ class AsphaltSegmentationService:
                 {"x": width * margin, "y": height * (1 - margin)},
             ]
             
-            # Convert to geo coordinates
             geo_points = self._pixel_to_geo(pixel_points, width, height, image_bounds)
-            
             polygon = Polygon(geo_points)
             area_m2 = self._calculate_area_m2(polygon, image_bounds)
             
-            # Create a single "paved surface" polygon
             paved_surface = DetectedPolygon(
                 polygon=polygon,
                 pixel_points=pixel_points,
-                class_name="road",  # Treat as paved surface
-                confidence=0.5,  # Low confidence since it's estimated
+                class_name="road",
+                confidence=0.4,
                 area_m2=area_m2
             )
             
-            logger.info(f"   📍 Fallback: Created estimated paved area of {area_m2:.0f}m²")
-            
             return SegmentationResult(
-                buildings=[],  # No building detection
+                buildings=[],
                 paved_surfaces=[paved_surface],
                 raw_response={"fallback": True},
                 image_width=width,
@@ -400,7 +535,9 @@ class AsphaltSegmentationService:
             )
             
         except Exception as e:
-            logger.error(f"   ❌ Fallback segmentation failed: {e}")
+            logger.error(f"   ❌ Color-based detection failed: {e}")
+            import traceback
+            traceback.print_exc()
             return SegmentationResult()
 
 

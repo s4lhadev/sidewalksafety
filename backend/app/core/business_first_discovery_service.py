@@ -29,61 +29,59 @@ class BusinessTier(str, Enum):
 
 # Business type definitions with IDs for frontend selection
 # Each type has an ID, queries to search, and the tier it belongs to
+# NOTE: We search for ACTUAL properties, not management companies
+#       (e.g., "apartment complex" returns the building, not the management office)
 BUSINESS_TYPES = {
-    # Premium tier
-    "hoa": {
-        "tier": BusinessTier.PREMIUM,
-        "queries": ["homeowner association", "HOA"],
-    },
+    # Premium tier - Large properties with significant parking/roads
     "apartments": {
         "tier": BusinessTier.PREMIUM,
-        "queries": ["apartment complex", "apartments for rent"],
-    },
-    "property_mgmt": {
-        "tier": BusinessTier.PREMIUM,
-        "queries": ["property management company"],
+        "queries": ["apartment complex", "apartments for rent", "apartment building"],
     },
     "condos": {
         "tier": BusinessTier.PREMIUM,
-        "queries": ["condo association", "condominium"],
+        "queries": ["condominium complex", "condo building"],
     },
     "townhomes": {
         "tier": BusinessTier.PREMIUM,
-        "queries": ["townhome community", "residential complex"],
+        "queries": ["townhome community", "townhouse complex"],
     },
-    # High tier
+    "mobile_home": {
+        "tier": BusinessTier.PREMIUM,
+        "queries": ["mobile home park", "trailer park", "manufactured home community"],
+    },
+    # High tier - Commercial properties with large parking lots
     "shopping": {
         "tier": BusinessTier.HIGH,
-        "queries": ["shopping center", "shopping mall", "retail plaza"],
+        "queries": ["shopping center", "shopping mall", "retail plaza", "strip mall"],
     },
     "hotels": {
         "tier": BusinessTier.HIGH,
-        "queries": ["hotel", "motel"],
+        "queries": ["hotel", "motel", "extended stay"],
     },
     "offices": {
         "tier": BusinessTier.HIGH,
-        "queries": ["office park", "office building"],
+        "queries": ["office park", "office complex", "business park"],
     },
     "warehouses": {
         "tier": BusinessTier.HIGH,
-        "queries": ["warehouse", "distribution center", "industrial park"],
+        "queries": ["warehouse", "distribution center", "industrial park", "logistics center"],
     },
-    # Standard tier
+    # Standard tier - Medium-sized properties
     "churches": {
         "tier": BusinessTier.STANDARD,
-        "queries": ["church"],
+        "queries": ["church", "religious center", "place of worship"],
     },
     "schools": {
         "tier": BusinessTier.STANDARD,
-        "queries": ["school"],
+        "queries": ["school", "private school", "charter school"],
     },
     "hospitals": {
         "tier": BusinessTier.STANDARD,
-        "queries": ["hospital", "medical center"],
+        "queries": ["hospital", "medical center", "urgent care"],
     },
     "gyms": {
         "tier": BusinessTier.STANDARD,
-        "queries": ["gym", "fitness center"],
+        "queries": ["gym", "fitness center", "recreation center"],
     },
     "grocery": {
         "tier": BusinessTier.STANDARD,
@@ -91,7 +89,7 @@ BUSINESS_TYPES = {
     },
     "car_dealers": {
         "tier": BusinessTier.STANDARD,
-        "queries": ["car dealership"],
+        "queries": ["car dealership", "auto dealership"],
     },
 }
 

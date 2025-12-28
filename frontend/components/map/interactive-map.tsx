@@ -1,10 +1,10 @@
 'use client'
 
 import { useMemo, useCallback, useEffect, useState, useRef } from 'react'
-import { APIProvider, Map, Marker, useMap, InfoWindow } from '@vis.gl/react-google-maps'
+import { APIProvider, Map, Marker, useMap, InfoWindow, useMapsLibrary } from '@vis.gl/react-google-maps'
 import { MarkerClusterer, GridAlgorithm } from '@googlemaps/markerclusterer'
 import { DealMapResponse } from '@/types'
-import { MapPin, ExternalLink, Satellite, Map as MapIcon, X, CheckCircle2, Clock, Target, Building2, Phone, Globe, AlertTriangle } from 'lucide-react'
+import { MapPin, ExternalLink, Satellite, Map as MapIcon, X, CheckCircle2, Clock, Target, Building2, Phone, Globe, AlertTriangle, Search, Loader2 } from 'lucide-react'
 import { StatusChip, IconChip } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { parkingLotsApi } from '@/lib/api/parking-lots'
@@ -229,6 +229,161 @@ function MapTypeController({
   return null
 }
 
+// Search box component using Google Places Autocomplete
+function PlaceSearchBox({ onPlaceSelect }: { onPlaceSelect: (lat: number, lng: number, name: string) => void }) {
+  const [inputValue, setInputValue] = useState('')
+  const [predictions, setPredictions] = useState<google.maps.places.AutocompletePrediction[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  
+  const placesLib = useMapsLibrary('places')
+  const autocompleteServiceRef = useRef<google.maps.places.AutocompleteService | null>(null)
+  const placesServiceRef = useRef<google.maps.places.PlacesService | null>(null)
+  const map = useMap()
+  
+  useEffect(() => {
+    if (!placesLib) return
+    autocompleteServiceRef.current = new placesLib.AutocompleteService()
+    if (map) {
+      placesServiceRef.current = new placesLib.PlacesService(map)
+    }
+  }, [placesLib, map])
+  
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+          inputRef.current && !inputRef.current.contains(e.target as Node)) {
+        setShowDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+  
+  const handleInputChange = async (value: string) => {
+    setInputValue(value)
+    
+    if (!value.trim() || !autocompleteServiceRef.current) {
+      setPredictions([])
+      setShowDropdown(false)
+      return
+    }
+    
+    setIsLoading(true)
+    try {
+      const response = await autocompleteServiceRef.current.getPlacePredictions({
+        input: value,
+        types: ['geocode', 'establishment'],
+      })
+      setPredictions(response?.predictions || [])
+      setShowDropdown(true)
+    } catch (error) {
+      console.error('Autocomplete error:', error)
+      setPredictions([])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+  
+  const handleSelectPlace = async (prediction: google.maps.places.AutocompletePrediction) => {
+    if (!placesServiceRef.current) return
+    
+    setIsLoading(true)
+    setInputValue(prediction.description)
+    setShowDropdown(false)
+    
+    try {
+      placesServiceRef.current.getDetails(
+        { placeId: prediction.place_id, fields: ['geometry', 'name'] },
+        (place, status) => {
+          if (status === google.maps.places.PlacesServiceStatus.OK && place?.geometry?.location) {
+            const lat = place.geometry.location.lat()
+            const lng = place.geometry.location.lng()
+            onPlaceSelect(lat, lng, place.name || prediction.description)
+          }
+          setIsLoading(false)
+        }
+      )
+    } catch (error) {
+      console.error('Place details error:', error)
+      setIsLoading(false)
+    }
+  }
+  
+  return (
+    <div className="relative w-72">
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputValue}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onFocus={() => predictions.length > 0 && setShowDropdown(true)}
+          placeholder="Search for a city or address..."
+          className="w-full pl-10 pr-10 py-2.5 bg-white rounded-lg shadow-lg border border-slate-200 
+                     text-sm text-slate-700 placeholder:text-slate-400
+                     focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent
+                     transition-all"
+        />
+        {isLoading && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 animate-spin" />
+        )}
+        {inputValue && !isLoading && (
+          <button
+            onClick={() => { setInputValue(''); setPredictions([]); setShowDropdown(false) }}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      
+      {showDropdown && predictions.length > 0 && (
+        <div
+          ref={dropdownRef}
+          className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden z-50"
+        >
+          {predictions.map((prediction) => (
+            <button
+              key={prediction.place_id}
+              onClick={() => handleSelectPlace(prediction)}
+              className="w-full px-4 py-3 text-left hover:bg-slate-50 border-b border-slate-100 last:border-b-0 transition-colors"
+            >
+              <div className="text-sm font-medium text-slate-700 truncate">
+                {prediction.structured_formatting.main_text}
+              </div>
+              <div className="text-xs text-slate-500 truncate">
+                {prediction.structured_formatting.secondary_text}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Controller that pans the map to a searched location
+function SearchLocationController({
+  searchLocation,
+}: {
+  searchLocation: { lat: number; lng: number; name: string } | null
+}) {
+  const map = useMap()
+  
+  useEffect(() => {
+    if (!map || !searchLocation) return
+    
+    map.panTo({ lat: searchLocation.lat, lng: searchLocation.lng })
+    map.setZoom(14) // Good zoom for city/area view
+  }, [map, searchLocation])
+  
+  return null
+}
+
 export function InteractiveMap({
   deals,
   selectedDeal,
@@ -239,6 +394,11 @@ export function InteractiveMap({
   clickedLocation,
 }: InteractiveMapProps) {
   const [mapType, setMapType] = useState<'roadmap' | 'hybrid'>('roadmap')
+  const [searchLocation, setSearchLocation] = useState<{ lat: number; lng: number; name: string } | null>(null)
+  
+  const handlePlaceSelect = useCallback((lat: number, lng: number, name: string) => {
+    setSearchLocation({ lat, lng, name })
+  }, [])
   
   const dealsWithLocation = useMemo(
     () => deals.filter((deal) => deal.latitude && deal.longitude),
@@ -282,26 +442,31 @@ export function InteractiveMap({
 
   return (
     <div className="relative w-full h-full cursor-crosshair">
-      {/* Map Type Toggle Button */}
-      <button
-        onClick={toggleMapType}
-        className="absolute top-4 right-4 z-10 flex items-center gap-2 px-3 py-2 bg-white rounded-lg shadow-lg hover:shadow-xl transition-all hover:scale-105 border border-slate-200"
-        title={mapType === 'roadmap' ? 'Switch to Satellite' : 'Switch to Map'}
-      >
-        {mapType === 'roadmap' ? (
-          <>
-            <Satellite className="h-4 w-4 text-slate-700" />
-            <span className="text-sm font-medium text-slate-700">Satellite</span>
-          </>
-        ) : (
-          <>
-            <MapIcon className="h-4 w-4 text-slate-700" />
-            <span className="text-sm font-medium text-slate-700">Map</span>
-          </>
-        )}
-      </button>
-
-      <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}>
+      <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY} libraries={['places']}>
+        {/* Top Controls: Search Bar + Map Type Toggle */}
+        <div className="absolute top-4 left-4 right-4 z-10 flex items-center justify-between gap-4">
+          {/* Search Box */}
+          <PlaceSearchBox onPlaceSelect={handlePlaceSelect} />
+          
+          {/* Map Type Toggle Button */}
+          <button
+            onClick={toggleMapType}
+            className="flex items-center gap-2 px-3 py-2.5 bg-white rounded-lg shadow-lg hover:shadow-xl transition-all hover:scale-105 border border-slate-200"
+            title={mapType === 'roadmap' ? 'Switch to Satellite' : 'Switch to Map'}
+          >
+            {mapType === 'roadmap' ? (
+              <>
+                <Satellite className="h-4 w-4 text-slate-700" />
+                <span className="text-sm font-medium text-slate-700">Satellite</span>
+              </>
+            ) : (
+              <>
+                <MapIcon className="h-4 w-4 text-slate-700" />
+                <span className="text-sm font-medium text-slate-700">Map</span>
+              </>
+            )}
+          </button>
+        </div>
         <Map
           defaultCenter={defaultCenter}
           defaultZoom={dealsWithLocation.length > 0 ? 13 : 10}
@@ -319,6 +484,7 @@ export function InteractiveMap({
           <MapController onBoundsChange={onBoundsChange} onMapClick={onMapClick} />
           <MapTypeController mapType={mapType} onMapTypeChange={setMapType} />
           <CenterMapController selectedDeal={selectedDeal} />
+          <SearchLocationController searchLocation={searchLocation} />
 
           <MarkerClustererComponent
             deals={dealsWithLocation}

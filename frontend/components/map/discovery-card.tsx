@@ -41,7 +41,7 @@ interface Tier {
 interface DiscoveryCardProps {
   lat: number
   lng: number
-  onDiscover: (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[]) => void
+  onDiscover: (type: 'zip' | 'county', value: string, state?: string, businessTypeIds?: string[], maxResults?: number) => void
   onClose: () => void
   isDiscovering: boolean
 }
@@ -52,13 +52,12 @@ const BUSINESS_TIERS: Tier[] = [
     id: 'premium',
     label: 'Premium',
     icon: 'trophy',
-    description: 'HOAs, apartments - high success rate',
+    description: 'Residential with large parking & roads',
     types: [
-      { id: 'hoa', label: 'HOA / Homeowner Associations', queries: [] },
       { id: 'apartments', label: 'Apartment Complexes', queries: [] },
-      { id: 'property_mgmt', label: 'Property Management', queries: [] },
-      { id: 'condos', label: 'Condo Associations', queries: [] },
+      { id: 'condos', label: 'Condo Buildings', queries: [] },
       { id: 'townhomes', label: 'Townhome Communities', queries: [] },
+      { id: 'mobile_home', label: 'Mobile Home Parks', queries: [] },
     ],
   },
   {
@@ -69,8 +68,8 @@ const BUSINESS_TIERS: Tier[] = [
     types: [
       { id: 'shopping', label: 'Shopping Centers / Malls', queries: [] },
       { id: 'hotels', label: 'Hotels / Motels', queries: [] },
-      { id: 'offices', label: 'Office Parks / Buildings', queries: [] },
-      { id: 'warehouses', label: 'Warehouses / Distribution', queries: [] },
+      { id: 'offices', label: 'Office Parks / Complexes', queries: [] },
+      { id: 'warehouses', label: 'Warehouses / Industrial', queries: [] },
     ],
   },
   {
@@ -90,7 +89,7 @@ const BUSINESS_TIERS: Tier[] = [
 ]
 
 // Default selected types (premium tier)
-const DEFAULT_SELECTED = ['hoa', 'apartments', 'condos', 'townhomes', 'property_mgmt']
+const DEFAULT_SELECTED = ['apartments', 'condos', 'townhomes', 'mobile_home']
 
 export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: DiscoveryCardProps) {
   const [locationInfo, setLocationInfo] = useState<LocationInfo | null>(null)
@@ -100,6 +99,7 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set(DEFAULT_SELECTED))
   const [expandedTiers, setExpandedTiers] = useState<Set<string>>(new Set(['premium']))
+  const [maxResults, setMaxResults] = useState<number>(10)
 
   useEffect(() => {
     const geocode = async () => {
@@ -163,9 +163,9 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
     const typeIds = Array.from(selectedTypes)
     
     if (pendingAction === 'zip' && locationInfo.zip) {
-      onDiscover('zip', locationInfo.zip, undefined, typeIds.length > 0 ? typeIds : undefined)
+      onDiscover('zip', locationInfo.zip, undefined, typeIds.length > 0 ? typeIds : undefined, maxResults)
     } else if (pendingAction === 'county' && locationInfo.county && locationInfo.state) {
-      onDiscover('county', locationInfo.county, locationInfo.state, typeIds.length > 0 ? typeIds : undefined)
+      onDiscover('county', locationInfo.county, locationInfo.state, typeIds.length > 0 ? typeIds : undefined, maxResults)
     }
   }
 
@@ -294,6 +294,22 @@ export function DiscoveryCard({ lat, lng, onDiscover, onClose, isDiscovering }: 
                       {totalSelected} business type{totalSelected !== 1 ? 's' : ''} selected
                     </p>
                   </div>
+                </div>
+
+                {/* Max Results Input */}
+                <div className="flex items-center gap-3 px-3 py-2 bg-slate-50 rounded-lg">
+                  <label htmlFor="maxResults" className="text-sm text-slate-600 whitespace-nowrap">
+                    Max businesses:
+                  </label>
+                  <input
+                    id="maxResults"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={maxResults}
+                    onChange={(e) => setMaxResults(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+                    className="w-16 px-2 py-1 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-center"
+                  />
                 </div>
 
                 {/* Business Type Selection */}

@@ -17,4 +17,14 @@ export function useParkingLotBusinesses(id: string) {
   })
 }
 
+export function useTileImage(tileId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['tile-image', tileId],
+    queryFn: () => tileId ? parkingLotsApi.getTileImage(tileId) : null,
+    enabled: !!tileId,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  })
+}
+
+
 

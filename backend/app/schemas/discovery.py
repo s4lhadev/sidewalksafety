@@ -25,27 +25,27 @@ class BusinessTierEnum(str, Enum):
 
 
 # Available business types by tier (for frontend display)
+# NOTE: We search for ACTUAL properties, not management companies
 BUSINESS_TYPE_OPTIONS = {
     "premium": [
-        {"id": "hoa", "label": "Homeowner Associations (HOA)", "queries": ["homeowner association", "HOA"]},
-        {"id": "apartments", "label": "Apartment Complexes", "queries": ["apartment complex", "apartments for rent"]},
-        {"id": "property_mgmt", "label": "Property Management", "queries": ["property management company"]},
-        {"id": "condos", "label": "Condo Associations", "queries": ["condo association", "condominium"]},
-        {"id": "townhomes", "label": "Townhome Communities", "queries": ["townhome community", "residential complex"]},
+        {"id": "apartments", "label": "Apartment Complexes", "queries": ["apartment complex", "apartments for rent", "apartment building"]},
+        {"id": "condos", "label": "Condo Buildings", "queries": ["condominium complex", "condo building"]},
+        {"id": "townhomes", "label": "Townhome Communities", "queries": ["townhome community", "townhouse complex"]},
+        {"id": "mobile_home", "label": "Mobile Home Parks", "queries": ["mobile home park", "trailer park", "manufactured home community"]},
     ],
     "high": [
-        {"id": "shopping", "label": "Shopping Centers / Malls", "queries": ["shopping center", "shopping mall", "retail plaza"]},
-        {"id": "hotels", "label": "Hotels / Motels", "queries": ["hotel", "motel"]},
-        {"id": "offices", "label": "Office Parks / Buildings", "queries": ["office park", "office building"]},
-        {"id": "warehouses", "label": "Warehouses / Distribution", "queries": ["warehouse", "distribution center", "industrial park"]},
+        {"id": "shopping", "label": "Shopping Centers / Malls", "queries": ["shopping center", "shopping mall", "retail plaza", "strip mall"]},
+        {"id": "hotels", "label": "Hotels / Motels", "queries": ["hotel", "motel", "extended stay"]},
+        {"id": "offices", "label": "Office Parks / Complexes", "queries": ["office park", "office complex", "business park"]},
+        {"id": "warehouses", "label": "Warehouses / Industrial", "queries": ["warehouse", "distribution center", "industrial park", "logistics center"]},
     ],
     "standard": [
-        {"id": "churches", "label": "Churches", "queries": ["church"]},
-        {"id": "schools", "label": "Schools", "queries": ["school"]},
-        {"id": "hospitals", "label": "Hospitals / Medical", "queries": ["hospital", "medical center"]},
-        {"id": "gyms", "label": "Gyms / Fitness", "queries": ["gym", "fitness center"]},
+        {"id": "churches", "label": "Churches", "queries": ["church", "religious center", "place of worship"]},
+        {"id": "schools", "label": "Schools", "queries": ["school", "private school", "charter school"]},
+        {"id": "hospitals", "label": "Hospitals / Medical", "queries": ["hospital", "medical center", "urgent care"]},
+        {"id": "gyms", "label": "Gyms / Fitness", "queries": ["gym", "fitness center", "recreation center"]},
         {"id": "grocery", "label": "Grocery Stores", "queries": ["grocery store", "supermarket"]},
-        {"id": "car_dealers", "label": "Car Dealerships", "queries": ["car dealership"]},
+        {"id": "car_dealers", "label": "Car Dealerships", "queries": ["car dealership", "auto dealership"]},
     ],
 }
 
@@ -83,6 +83,12 @@ class DiscoveryRequest(BaseModel):
     business_type_ids: Optional[List[str]] = Field(
         default=None,
         description="Specific business type IDs to search (e.g., 'hoa', 'apartments'). If None, searches all types in selected tiers."
+    )
+    max_results: Optional[int] = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of businesses to discover (1-50). Default is 10."
     )
 
 

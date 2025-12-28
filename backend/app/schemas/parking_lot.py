@@ -93,16 +93,63 @@ class ParkingLotResponse(ParkingLotBase):
         from_attributes = True
 
 
+class TileSummary(BaseModel):
+    """Summary of a single analysis tile."""
+    id: str
+    tile_index: int
+    center_lat: float
+    center_lng: float
+    zoom_level: int
+    bounds: Dict[str, float]
+    asphalt_area_m2: Optional[float] = 0
+    condition_score: Optional[float] = 100
+    crack_count: Optional[int] = 0
+    pothole_count: Optional[int] = 0
+    status: str = "pending"
+    has_image: bool = False
+
+
 class PropertyAnalysisSummary(BaseModel):
     """Summary of property analysis for embedding in parking lot response."""
     id: str
     status: str
+    analysis_type: Optional[str] = "single"  # "single" or "tiled"
+    
+    # Aggregated metrics
     total_asphalt_area_m2: Optional[float] = None
+    total_asphalt_area_sqft: Optional[float] = None
+    parking_area_sqft: Optional[float] = None
+    road_area_sqft: Optional[float] = None
     weighted_condition_score: Optional[float] = None
+    worst_tile_score: Optional[float] = None
+    best_tile_score: Optional[float] = None
     total_crack_count: int = 0
     total_pothole_count: int = 0
+    total_detection_count: int = 0
+    damage_density: Optional[float] = None
+    
+    # Tile grid info
+    total_tiles: int = 0
+    analyzed_tiles: int = 0
+    tiles_with_asphalt: int = 0
+    tiles_with_damage: int = 0
+    tile_zoom_level: Optional[int] = None
+    tile_grid_rows: Optional[int] = None
+    tile_grid_cols: Optional[int] = None
+    
+    # Lead quality
+    lead_quality: Optional[str] = None
+    hotspot_count: int = 0
+    
+    # Legacy images (for single analysis)
     images: Dict[str, Optional[str]] = {}
     analyzed_at: Optional[str] = None
+    
+    # Property boundary info
+    property_boundary: Optional[Dict[str, Any]] = None
+    
+    # Tiles data (for tiled analysis)
+    tiles: List[TileSummary] = []
 
 
 class ParkingLotDetailResponse(ParkingLotResponse):

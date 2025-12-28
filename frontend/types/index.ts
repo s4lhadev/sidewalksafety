@@ -93,18 +93,97 @@ export interface Evaluation {
   evaluated_at: string
 }
 
+// Single tile from tile-based analysis
+export interface AnalysisTile {
+  id: string
+  tile_index: number
+  center_lat: number
+  center_lng: number
+  zoom_level: number
+  bounds: {
+    min_lat: number
+    max_lat: number
+    min_lng: number
+    max_lng: number
+  }
+  // Total asphalt from CV (includes public roads)
+  asphalt_area_m2: number
+  // Private asphalt (after filtering public roads via OSM)
+  private_asphalt_area_m2?: number
+  private_asphalt_area_sqft?: number
+  private_asphalt_geojson?: GeoJSONFeature  // For map overlay
+  // Public roads filtered out
+  public_road_area_m2?: number
+  asphalt_source?: string  // cv_only, cv_with_osm_filter, fallback
+  // Condition
+  condition_score: number
+  crack_count: number
+  pothole_count: number
+  status: string
+  has_image?: boolean  // Images are lazy-loaded via separate endpoint
+  image_base64?: string  // Only populated when fetched individually
+}
+
+// Tile image response from /tiles/{id}/image endpoint
+export interface TileImageResponse {
+  id: string
+  tile_index: number
+  image_base64?: string
+  segmentation_image_base64?: string
+  condition_image_base64?: string
+}
+
 // Property Analysis Summary (embedded in parking lot/deal response)
 export interface PropertyAnalysisSummary {
   id: string
   status: string
+  analysis_type?: 'single' | 'tiled'
+  detection_method?: 'grounded_sam' | 'legacy_cv'
+  
+  // ============ SURFACE TYPE BREAKDOWN (NEW - Grounded SAM) ============
+  surfaces?: SurfacesBreakdown
+  surfaces_geojson?: { type: 'FeatureCollection', features: GeoJSONFeature[] }
+  total_paved_area_m2?: number
+  total_paved_area_sqft?: number
+  
+  // ============ LEGACY FIELDS (backwards compat) ============
+  // Aggregated metrics (total from CV - includes public roads)
   total_asphalt_area_m2?: number
+  total_asphalt_area_sqft?: number
+  parking_area_sqft?: number
+  road_area_sqft?: number
+  // Private asphalt (after filtering public roads)
+  private_asphalt_area_m2?: number
+  private_asphalt_area_sqft?: number
+  private_asphalt_geojson?: GeoJSONFeature  // Merged GeoJSON for map overlay
+  public_road_area_m2?: number  // Roads filtered out
+  
+  // Condition
   weighted_condition_score?: number
+  worst_tile_score?: number
+  best_tile_score?: number
   total_crack_count: number
   total_pothole_count: number
+  total_detection_count?: number
+  damage_density?: number
+  // Tile grid info
+  total_tiles?: number
+  analyzed_tiles?: number
+  tiles_with_asphalt?: number
+  tiles_with_damage?: number
+  tile_zoom_level?: number
+  tile_grid_rows?: number
+  tile_grid_cols?: number
+  // Lead quality
+  lead_quality?: 'premium' | 'high' | 'standard' | 'low'
+  hotspot_count?: number
+  // Images (legacy or first tile)
   images: PropertyAnalysisImages
   analyzed_at?: string
-  // Regrid property boundary info
+  // Property boundary info
   property_boundary?: PropertyBoundaryInfo
+  // Tiles (for tiled analysis)
+  tiles?: AnalysisTile[]
 }
 
 export interface DealWithEvaluation extends Deal {
@@ -116,7 +195,7 @@ export interface GeographicSearchRequest {
   area_type: 'zip' | 'county'
   value: string
   state?: string
-  max_deals?: number
+  max_results?: number
   business_type_ids?: string[]
   tiers?: ('premium' | 'high' | 'standard')[]
 }
@@ -195,6 +274,27 @@ export interface PropertyBoundaryInfo {
 export interface GeoJSONPolygon {
   type: 'Polygon'
   coordinates: number[][][]
+}
+
+export interface GeoJSONFeature {
+  type: 'Feature'
+  geometry: GeoJSONPolygon
+  properties?: Record<string, any>
+}
+
+// ============ SURFACE TYPE BREAKDOWN (Grounded SAM) ============
+export interface SurfaceInfo {
+  area_m2?: number
+  area_sqft?: number
+  geojson?: GeoJSONFeature | null
+  color: string
+  label: string
+}
+
+export interface SurfacesBreakdown {
+  asphalt: SurfaceInfo
+  concrete: SurfaceInfo
+  buildings: SurfaceInfo
 }
 
 export interface PropertyAnalysis {

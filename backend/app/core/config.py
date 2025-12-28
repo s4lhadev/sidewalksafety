@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # - conversion-qmb4v/aerial-segmentation-3/1 (classes: building, road, vegetation)
     ROBOFLOW_SEGMENTATION_MODEL: str = "ics483/satellite-building-segmentation/2"
     
+    # Replicate API (for Grounded SAM - high accuracy surface detection)
+    # Get token from: https://replicate.com/account/api-tokens
+    REPLICATE_API_TOKEN: Optional[str] = None
+    
     # Image Storage
     CV_IMAGE_STORAGE_TYPE: str = "local"  # "local", "s3", "supabase"
     CV_IMAGE_STORAGE_PATH: str = "./storage/cv_images"

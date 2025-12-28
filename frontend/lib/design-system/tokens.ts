@@ -117,3 +117,4 @@ export function getConditionLabel(score: number): string {
 }
 
 
+

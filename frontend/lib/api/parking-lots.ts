@@ -27,20 +27,104 @@ export interface PropertyAnalysisImages {
   condition_analysis?: string
 }
 
+export interface PropertyBoundaryInfo {
+  source: string
+  parcel_id?: string
+  owner?: string
+  apn?: string
+  land_use?: string
+  zoning?: string
+  polygon?: GeoJSONPolygon
+}
+
+export interface GeoJSONPolygon {
+  type: 'Polygon' | 'MultiPolygon'
+  coordinates: number[][][] | number[][][][]
+}
+
+export interface GeoJSONFeature {
+  type: 'Feature'
+  geometry: GeoJSONPolygon
+  properties?: Record<string, any>
+}
+
+export interface GeoJSONFeatureCollection {
+  type: 'FeatureCollection'
+  features: GeoJSONFeature[]
+}
+
+export interface AnalysisTile {
+  id: string
+  tile_index: number
+  center_lat: number
+  center_lng: number
+  zoom_level: number
+  bounds: {
+    min_lat: number
+    max_lat: number
+    min_lng: number
+    max_lng: number
+  }
+  asphalt_area_m2: number
+  private_asphalt_area_m2?: number
+  private_asphalt_area_sqft?: number
+  private_asphalt_geojson?: GeoJSONFeature
+  public_road_area_m2?: number
+  asphalt_source?: string
+  condition_score: number
+  crack_count: number
+  pothole_count: number
+  status: string
+  has_image?: boolean
+}
+
 export interface PropertyAnalysisSummary {
   id: string
   status: string
+  analysis_type?: string
+  // Metrics
   total_asphalt_area_m2?: number
+  total_asphalt_area_sqft?: number
+  private_asphalt_area_m2?: number
+  private_asphalt_area_sqft?: number
+  private_asphalt_geojson?: GeoJSONFeature | GeoJSONFeatureCollection
+  public_road_area_m2?: number
+  parking_area_sqft?: number
+  road_area_sqft?: number
+  // Condition
   weighted_condition_score?: number
+  worst_tile_score?: number
+  best_tile_score?: number
   total_crack_count: number
   total_pothole_count: number
+  total_detection_count?: number
+  damage_density?: number
+  // Tiles
+  total_tiles?: number
+  analyzed_tiles?: number
+  tiles_with_asphalt?: number
+  tiles_with_damage?: number
+  tile_zoom_level?: number
+  tile_grid_rows?: number
+  tile_grid_cols?: number
+  // Lead quality
+  lead_quality?: string
+  hotspot_count?: number
+  // Images (legacy)
   images: PropertyAnalysisImages
   analyzed_at?: string
+  // Property boundary
+  property_boundary?: PropertyBoundaryInfo
+  // Tiles array
+  tiles?: AnalysisTile[]
 }
 
 export interface ParkingLotDetail {
   id: string
   centroid: ParkingLotCoordinates
+  // Flat lat/lng for easier use
+  latitude?: number
+  longitude?: number
   geometry?: ParkingLotGeometry
   area_m2?: number
   area_sqft?: number
@@ -80,6 +164,14 @@ export interface ParkingLotBusiness {
   location: ParkingLotCoordinates
 }
 
+export interface TileImageResponse {
+  id: string
+  tile_index: number
+  image_base64?: string
+  segmentation_image_base64?: string
+  condition_image_base64?: string
+}
+
 export const parkingLotsApi = {
   getParkingLot: async (id: string): Promise<ParkingLotDetail> => {
     const { data } = await apiClient.get<ParkingLotDetail>(`/parking-lots/${id}`)
@@ -88,6 +180,11 @@ export const parkingLotsApi = {
 
   getParkingLotBusinesses: async (id: string): Promise<ParkingLotBusiness[]> => {
     const { data } = await apiClient.get<ParkingLotBusiness[]>(`/parking-lots/${id}/businesses`)
+    return data
+  },
+
+  getTileImage: async (tileId: string): Promise<TileImageResponse> => {
+    const { data } = await apiClient.get<TileImageResponse>(`/parking-lots/tiles/${tileId}/image`)
     return data
   },
 }

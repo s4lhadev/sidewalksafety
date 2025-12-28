@@ -13,6 +13,7 @@ from app.models.business import Business
 from app.models.user import User
 from app.models.property_analysis import PropertyAnalysis
 from app.models.asphalt_area import AsphaltArea
+from app.models.analysis_tile import AnalysisTile
 from app.schemas.parking_lot import (
     ParkingLotResponse,
     ParkingLotDetailResponse,
@@ -34,6 +35,9 @@ def parking_lot_to_response(lot: ParkingLot, include_business: bool = False) -> 
     response = {
         "id": lot.id,
         "centroid": Coordinates(lat=centroid.y, lng=centroid.x),
+        # Add flat lat/lng for easier frontend use
+        "latitude": centroid.y,
+        "longitude": centroid.x,
         "area_m2": float(lot.area_m2) if lot.area_m2 else None,
         "area_sqft": float(lot.area_sqft) if lot.area_sqft else None,
         "operator_name": lot.operator_name,
@@ -316,19 +320,20 @@ def get_parking_lot(
         response["match_score"] = float(assoc.match_score)
         response["distance_meters"] = float(assoc.distance_meters)
     
-    # Get property analysis if exists
+    # Get LATEST property analysis if exists (order by created_at DESC to get newest)
     property_analysis = db.query(PropertyAnalysis).filter(
         PropertyAnalysis.parking_lot_id == parking_lot_id
-    ).first()
+    ).order_by(PropertyAnalysis.created_at.desc()).first()
     
     if property_analysis:
         # Debug logging
         import logging
         logger = logging.getLogger(__name__)
         logger.info(f"📸 PropertyAnalysis found for {parking_lot_id}")
-        logger.info(f"   wide_image_base64: {len(property_analysis.wide_image_base64) if property_analysis.wide_image_base64 else 0} chars")
-        logger.info(f"   segmentation_image_base64: {len(property_analysis.segmentation_image_base64) if property_analysis.segmentation_image_base64 else 0} chars")
-        logger.info(f"   property_boundary_source: {property_analysis.property_boundary_source}")
+        logger.info(f"   analysis_type: {property_analysis.analysis_type}")
+        logger.info(f"   total_tiles: {property_analysis.total_tiles}")
+        logger.info(f"   total_asphalt_sqft: {property_analysis.total_asphalt_area_sqft}")
+        logger.info(f"   condition_score: {property_analysis.weighted_condition_score}")
         
         # Build property boundary info if available
         property_boundary_info = None
@@ -350,13 +355,116 @@ def get_parking_lot(
                         "coordinates": [list(boundary_shape.exterior.coords)]
                     }
         
+        # Get tiles if this is a tiled analysis (WITHOUT images for performance)
+        tiles_data = []
+        if property_analysis.analysis_type == "tiled":
+            logger.info(f"   🔍 Querying tiles for analysis: {property_analysis.id}")
+            tiles = db.query(AnalysisTile).filter(
+                AnalysisTile.property_analysis_id == property_analysis.id
+            ).order_by(AnalysisTile.tile_index).all()
+            logger.info(f"   📊 Found {len(tiles)} tiles in database")
+            
+            for tile in tiles:
+                tiles_data.append({
+                    "id": str(tile.id),
+                    "tile_index": tile.tile_index,
+                    "center_lat": tile.center_lat,
+                    "center_lng": tile.center_lng,
+                    "zoom_level": tile.zoom_level,
+                    "bounds": {
+                        "min_lat": tile.bounds_min_lat,
+                        "max_lat": tile.bounds_max_lat,
+                        "min_lng": tile.bounds_min_lng,
+                        "max_lng": tile.bounds_max_lng,
+                    },
+                    # Total asphalt from CV (includes public roads)
+                    "asphalt_area_m2": tile.asphalt_area_m2,
+                    # Private asphalt (after filtering public roads)
+                    "private_asphalt_area_m2": tile.private_asphalt_area_m2,
+                    "private_asphalt_area_sqft": tile.private_asphalt_area_sqft,
+                    "private_asphalt_geojson": tile.private_asphalt_geojson,  # For map overlay
+                    # Public roads filtered out
+                    "public_road_area_m2": tile.public_road_area_m2,
+                    "asphalt_source": tile.asphalt_source,
+                    # Condition
+                    "condition_score": tile.condition_score,
+                    "crack_count": tile.crack_count,
+                    "pothole_count": tile.pothole_count,
+                    "status": tile.status,
+                    # Images NOT included here for performance - use /tiles/{id}/image endpoint
+                    "has_image": tile.satellite_image_base64 is not None,
+                })
+        
         response["property_analysis"] = {
             "id": str(property_analysis.id),
             "status": property_analysis.status,
+            "analysis_type": property_analysis.analysis_type or "single",
+            "detection_method": getattr(property_analysis, 'detection_method', None) or "legacy_cv",
+            
+            # ============ SURFACE TYPE BREAKDOWN (NEW) ============
+            "surfaces": {
+                "asphalt": {
+                    "area_m2": property_analysis.private_asphalt_area_m2,
+                    "area_sqft": property_analysis.private_asphalt_area_sqft,
+                    "geojson": getattr(property_analysis, 'private_asphalt_geojson', None),
+                    "color": "#374151",  # Dark gray
+                    "label": "Asphalt",
+                },
+                "concrete": {
+                    "area_m2": getattr(property_analysis, 'concrete_area_m2', None),
+                    "area_sqft": getattr(property_analysis, 'concrete_area_sqft', None),
+                    "geojson": getattr(property_analysis, 'concrete_geojson', None),
+                    "color": "#9CA3AF",  # Light gray
+                    "label": "Concrete",
+                },
+                "buildings": {
+                    "area_m2": getattr(property_analysis, 'building_area_m2', None),
+                    "geojson": getattr(property_analysis, 'building_geojson', None),
+                    "color": "#DC2626",  # Red
+                    "label": "Buildings",
+                },
+            },
+            "surfaces_geojson": getattr(property_analysis, 'surfaces_geojson', None),  # FeatureCollection for all
+            
+            # Total paved area (asphalt + concrete)
+            "total_paved_area_m2": getattr(property_analysis, 'total_paved_area_m2', None) or (
+                (property_analysis.private_asphalt_area_m2 or 0) + (getattr(property_analysis, 'concrete_area_m2', None) or 0)
+            ),
+            "total_paved_area_sqft": getattr(property_analysis, 'total_paved_area_sqft', None) or (
+                (property_analysis.private_asphalt_area_sqft or 0) + (getattr(property_analysis, 'concrete_area_sqft', None) or 0)
+            ),
+            
+            # ============ LEGACY FIELDS (backwards compat) ============
+            # Aggregated metrics (total from CV)
             "total_asphalt_area_m2": property_analysis.total_asphalt_area_m2,
+            "total_asphalt_area_sqft": property_analysis.total_asphalt_area_sqft,
+            "parking_area_sqft": property_analysis.parking_area_sqft,
+            "road_area_sqft": property_analysis.road_area_sqft,
+            # Private asphalt (after filtering public roads)
+            "private_asphalt_area_m2": property_analysis.private_asphalt_area_m2,
+            "private_asphalt_area_sqft": property_analysis.private_asphalt_area_sqft,
+            "private_asphalt_geojson": property_analysis.private_asphalt_geojson,
+            "public_road_area_m2": property_analysis.public_road_area_m2,
+            # Condition
             "weighted_condition_score": property_analysis.weighted_condition_score,
+            "worst_tile_score": property_analysis.worst_tile_score,
+            "best_tile_score": property_analysis.best_tile_score,
             "total_crack_count": int(property_analysis.total_crack_count) if property_analysis.total_crack_count else 0,
             "total_pothole_count": int(property_analysis.total_pothole_count) if property_analysis.total_pothole_count else 0,
+            "total_detection_count": int(property_analysis.total_detection_count) if property_analysis.total_detection_count else 0,
+            "damage_density": property_analysis.damage_density,
+            # Tile grid info
+            "total_tiles": int(property_analysis.total_tiles) if property_analysis.total_tiles else 0,
+            "analyzed_tiles": int(property_analysis.analyzed_tiles) if property_analysis.analyzed_tiles else 0,
+            "tiles_with_asphalt": int(property_analysis.tiles_with_asphalt) if property_analysis.tiles_with_asphalt else 0,
+            "tiles_with_damage": int(property_analysis.tiles_with_damage) if property_analysis.tiles_with_damage else 0,
+            "tile_zoom_level": int(property_analysis.tile_zoom_level) if property_analysis.tile_zoom_level else None,
+            "tile_grid_rows": int(property_analysis.tile_grid_rows) if property_analysis.tile_grid_rows else None,
+            "tile_grid_cols": int(property_analysis.tile_grid_cols) if property_analysis.tile_grid_cols else None,
+            # Lead quality
+            "lead_quality": property_analysis.lead_quality,
+            "hotspot_count": int(property_analysis.hotspot_count) if property_analysis.hotspot_count else 0,
+            # Legacy images (for single analysis or backward compat)
             "images": {
                 "wide_satellite": property_analysis.wide_image_base64,
                 "segmentation": property_analysis.segmentation_image_base64,
@@ -365,6 +473,8 @@ def get_parking_lot(
             },
             "analyzed_at": property_analysis.analyzed_at.isoformat() if property_analysis.analyzed_at else None,
             "property_boundary": property_boundary_info,
+            # Tiles data (for tiled analysis)
+            "tiles": tiles_data,
         }
     else:
         import logging
@@ -418,3 +528,38 @@ def get_parking_lot_businesses(
             })
     
     return results
+
+
+@router.get("/tiles/{tile_id}/image")
+def get_tile_image(
+    tile_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the satellite image for a specific analysis tile.
+    
+    Returns the base64-encoded image for lazy loading on the frontend.
+    """
+    # Get the tile
+    tile = db.query(AnalysisTile).filter(AnalysisTile.id == tile_id).first()
+    
+    if not tile:
+        raise HTTPException(status_code=404, detail="Tile not found")
+    
+    # Verify user owns this tile's analysis
+    analysis = db.query(PropertyAnalysis).filter(
+        PropertyAnalysis.id == tile.property_analysis_id,
+        PropertyAnalysis.user_id == current_user.id
+    ).first()
+    
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Tile not found")
+    
+    return {
+        "id": str(tile.id),
+        "tile_index": tile.tile_index,
+        "image_base64": tile.satellite_image_base64,
+        "segmentation_image_base64": tile.segmentation_image_base64,
+        "condition_image_base64": tile.condition_image_base64,
+    }

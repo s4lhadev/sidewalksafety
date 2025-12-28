@@ -41,3 +41,4 @@ class CVImage(Base):
     # Relationship
     property_analysis = relationship("PropertyAnalysis", back_populates="cv_images")
 
+

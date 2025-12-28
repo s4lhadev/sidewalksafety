@@ -44,3 +44,4 @@ WHERE table_name = 'property_analyses'
 AND column_name LIKE 'property_%'
 ORDER BY column_name;
 
+

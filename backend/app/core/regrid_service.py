@@ -81,7 +81,7 @@ class RegridService:
         
         Args:
             lat: Latitude
-            lng: Longitude
+            lng: Longitude (note: Regrid uses 'lon' not 'lng')
             
         Returns:
             PropertyParcel if found, None otherwise
@@ -93,11 +93,11 @@ class RegridService:
         try:
             client = await self._get_client()
             
-            # Regrid API endpoint for point lookup
-            url = f"{self.base_url}/parcels/point"
+            # Regrid V2 API endpoint for point lookup (this is the correct endpoint!)
+            url = "https://app.regrid.com/api/v2/parcels/point"
             params = {
                 "lat": lat,
-                "lon": lng,
+                "lon": lng,  # Note: Regrid uses 'lon' not 'lng'
                 "token": self.api_key,
             }
             
@@ -119,12 +119,17 @@ class RegridService:
             
             data = response.json()
             
+            # V2 API returns parcels in a nested structure
+            parcels_data = data.get("parcels", {})
+            
             # Parse the response
-            parcels = self._parse_response(data)
+            parcels = self._parse_response(parcels_data)
             
             if parcels:
                 parcel = parcels[0]  # Return the first (closest) parcel
-                logger.info(f"   ✅ Found parcel: {parcel.parcel_id}, {parcel.area_m2:.0f} m²")
+                logger.info(f"   ✅ Found parcel: {parcel.address or parcel.parcel_id}")
+                logger.info(f"      Owner: {parcel.owner}")
+                logger.info(f"      Area: {parcel.area_m2:,.0f} m² ({parcel.area_acres or 0:.2f} acres)")
                 return parcel
             
             logger.warning(f"   ⚠️ No parcels in response for ({lat:.6f}, {lng:.6f})")
@@ -136,13 +141,21 @@ class RegridService:
     
     async def get_parcel_by_address(
         self,
-        address: str
+        address: str,
+        fallback_lat: Optional[float] = None,
+        fallback_lng: Optional[float] = None
     ) -> Optional[PropertyParcel]:
         """
-        Get property parcel by address.
+        Get property parcel by address using Regrid's typeahead + detail lookup.
+        
+        This is MORE ACCURATE than point lookup because it matches the actual
+        street address rather than relying on coordinates that might land on
+        an adjacent parcel.
         
         Args:
-            address: Full street address
+            address: Full street address (e.g., "2929 Oak Lawn Ave, Dallas, TX 75219")
+            fallback_lat: Fallback latitude if address search fails
+            fallback_lng: Fallback longitude if address search fails
             
         Returns:
             PropertyParcel if found, None otherwise
@@ -154,40 +167,95 @@ class RegridService:
         try:
             client = await self._get_client()
             
-            # Regrid API endpoint for address search
-            url = f"{self.base_url}/parcels"
-            params = {
+            logger.info(f"   🗺️  Fetching parcel from Regrid for address: {address[:60]}...")
+            
+            # Step 1: Use typeahead to find the parcel path
+            typeahead_url = "https://app.regrid.com/api/v1/typeahead"
+            typeahead_params = {
                 "query": address,
                 "token": self.api_key,
             }
             
-            logger.info(f"   🗺️  Fetching parcel from Regrid for address: {address[:50]}...")
-            
-            response = await client.get(url, params=params)
-            
-            if response.status_code == 401:
-                logger.error("   ❌ Regrid API authentication failed - check API key")
-                return None
+            response = await client.get(typeahead_url, params=typeahead_params)
             
             if response.status_code != 200:
-                logger.error(f"   ❌ Regrid API error: {response.status_code} - {response.text[:200]}")
+                logger.warning(f"   ⚠️ Typeahead failed: {response.status_code}")
+                # Fall back to point lookup if address search fails
+                if fallback_lat and fallback_lng:
+                    logger.info(f"   🔄 Falling back to point lookup...")
+                    return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
                 return None
             
-            data = response.json()
+            typeahead_data = response.json()
             
-            # Parse the response
-            parcels = self._parse_response(data)
+            # Typeahead API returns a list directly, or a dict with "results"
+            if isinstance(typeahead_data, list):
+                results = typeahead_data
+            else:
+                results = typeahead_data.get("results", [])
+            
+            if not results:
+                logger.warning(f"   ⚠️ No typeahead results for: {address[:50]}")
+                if fallback_lat and fallback_lng:
+                    logger.info(f"   🔄 Falling back to point lookup...")
+                    return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
+                return None
+            
+            # Find the best matching result (prefer parcels over other types)
+            best_result = None
+            for result in results:
+                result_type = result.get("type", "")
+                if result_type == "parcel":
+                    best_result = result
+                    break
+            
+            if not best_result:
+                best_result = results[0]  # Take first result if no parcel type
+            
+            parcel_path = best_result.get("path")
+            
+            if not parcel_path:
+                logger.warning(f"   ⚠️ No parcel path in result")
+                if fallback_lat and fallback_lng:
+                    return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
+                return None
+            
+            logger.info(f"   📍 Found parcel path: {parcel_path}")
+            
+            # Step 2: Fetch the parcel details using the path
+            detail_url = f"https://app.regrid.com/api/v1/parcel{parcel_path}.json"
+            detail_params = {"token": self.api_key}
+            
+            detail_response = await client.get(detail_url, params=detail_params)
+            
+            if detail_response.status_code != 200:
+                logger.warning(f"   ⚠️ Parcel detail fetch failed: {detail_response.status_code}")
+                if fallback_lat and fallback_lng:
+                    return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
+                return None
+            
+            detail_data = detail_response.json()
+            
+            # Parse as GeoJSON feature
+            parcels = self._parse_response(detail_data)
             
             if parcels:
-                parcel = parcels[0]  # Return the first (best match) parcel
-                logger.info(f"   ✅ Found parcel: {parcel.parcel_id}, {parcel.area_m2:.0f} m²")
+                parcel = parcels[0]
+                logger.info(f"   ✅ Found parcel by ADDRESS: {parcel.address or parcel.parcel_id}")
+                logger.info(f"      Owner: {parcel.owner}")
+                logger.info(f"      Area: {parcel.area_m2:,.0f} m² ({parcel.area_acres or 0:.2f} acres)")
                 return parcel
             
-            logger.warning(f"   ⚠️ No parcels found for address: {address[:50]}...")
+            logger.warning(f"   ⚠️ Could not parse parcel data")
+            if fallback_lat and fallback_lng:
+                return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
             return None
             
         except Exception as e:
-            logger.error(f"   ❌ Regrid API error: {e}")
+            logger.error(f"   ❌ Regrid address search error: {e}")
+            if fallback_lat and fallback_lng:
+                logger.info(f"   🔄 Falling back to point lookup...")
+                return await self.get_parcel_by_coordinates(fallback_lat, fallback_lng)
             return None
     
     async def get_parcels_in_area(
@@ -296,12 +364,17 @@ class RegridService:
             logger.debug(f"Failed to parse geometry: {e}")
             return None
         
+        # V2 API stores detailed fields in a 'fields' subobject
+        fields = properties.get("fields", {})
+        
+        # Merge properties and fields (fields takes precedence)
+        all_props = {**properties, **fields}
+        
         # Extract properties (Regrid uses various field names)
-        # Common Regrid fields:
         parcel_id = (
-            properties.get("ll_uuid") or  # Regrid's unique ID
-            properties.get("parcelnumb") or  # Parcel number
-            properties.get("id") or
+            all_props.get("ll_uuid") or  # Regrid's unique ID
+            all_props.get("parcelnumb") or  # Parcel number
+            properties.get("ll_uuid") or
             str(feature.get("id", "unknown"))
         )
         
@@ -316,25 +389,38 @@ class RegridService:
         area_m2 = abs(area_m2)
         
         # Get area in acres from properties if available
-        area_acres = properties.get("ll_gisacre") or properties.get("gisacre")
+        area_acres = all_props.get("ll_gisacre") or all_props.get("gisacre")
         if area_acres:
             try:
                 area_acres = float(area_acres)
             except:
                 area_acres = None
         
+        # Get address - try multiple field names
+        address = (
+            all_props.get("address") or 
+            all_props.get("situs") or
+            properties.get("headline")  # V2 API uses 'headline' for address
+        )
+        
+        # Get owner
+        owner = (
+            all_props.get("owner") or 
+            all_props.get("ownername")
+        )
+        
         return PropertyParcel(
             parcel_id=str(parcel_id),
-            apn=properties.get("parcelnumb") or properties.get("apn"),
-            address=properties.get("address") or properties.get("situs"),
-            owner=properties.get("owner") or properties.get("ownername"),
+            apn=all_props.get("parcelnumb") or all_props.get("apn"),
+            address=address,
+            owner=owner,
             polygon=geom,
             centroid=geom.centroid,
             area_m2=area_m2,
             area_acres=area_acres,
-            land_use=properties.get("usecode") or properties.get("landuse"),
-            zoning=properties.get("zoning") or properties.get("zoning_code"),
-            year_built=properties.get("yearbuilt"),
+            land_use=all_props.get("usedesc") or all_props.get("usecode") or all_props.get("landuse"),
+            zoning=all_props.get("zoning") or all_props.get("zoning_code"),
+            year_built=all_props.get("yearbuilt"),
             raw_data=feature,
         )
     
@@ -346,4 +432,5 @@ class RegridService:
 
 # Singleton instance
 regrid_service = RegridService()
+
 
