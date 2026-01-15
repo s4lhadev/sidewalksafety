@@ -33,14 +33,40 @@ import {
   UserSearch,
   Briefcase,
   Route,
+  Play,
+  Pause,
 } from 'lucide-react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { PropertyAnalysisMap } from '@/components/map/property-analysis-map'
 import { parkingLotsApi, AnalyzePropertyRequest } from '@/lib/api/parking-lots'
 import { scoringPromptsApi } from '@/lib/api/scoring-prompts'
+import { useProcessParcelStream, ProcessParcelProgress } from '@/lib/hooks/use-process-parcel-stream'
+
+// Progress type to display info mapping
+const PROGRESS_DISPLAY: Record<string, { icon: string; color: string }> = {
+  started: { icon: '▶', color: 'text-stone-500' },
+  regrid: { icon: '◎', color: 'text-amber-500' },
+  regrid_complete: { icon: '✓', color: 'text-emerald-500' },
+  regrid_warning: { icon: '!', color: 'text-amber-500' },
+  regrid_error: { icon: '✗', color: 'text-red-500' },
+  classifying: { icon: '◎', color: 'text-violet-500' },
+  classified: { icon: '✓', color: 'text-violet-500' },
+  imagery: { icon: '◎', color: 'text-sky-500' },
+  imagery_complete: { icon: '✓', color: 'text-sky-500' },
+  imagery_error: { icon: '✗', color: 'text-red-500' },
+  analyzing: { icon: '◎', color: 'text-orange-500' },
+  analyzing_error: { icon: '✗', color: 'text-red-500' },
+  scoring: { icon: '★', color: 'text-amber-500' },
+  enriching: { icon: '◎', color: 'text-emerald-500' },
+  enrichment_complete: { icon: '✓', color: 'text-stone-400' },
+  enrichment_error: { icon: '✗', color: 'text-red-500' },
+  contact_found: { icon: '✓', color: 'text-emerald-500' },
+  complete: { icon: '✓', color: 'text-emerald-500' },
+  error: { icon: '✗', color: 'text-red-500' },
+}
 
 export default function ParkingLotDetailPage() {
   const params = useParams()
@@ -61,6 +87,31 @@ export default function ParkingLotDetailPage() {
     steps?: string[]
     enrichment_detailed_steps?: any[]
   } | null>(null)
+  const streamLogRef = useRef<HTMLDivElement>(null)
+
+  // Streaming hook for processing
+  const { 
+    startProcessing, 
+    stopProcessing, 
+    isProcessing, 
+    progress, 
+    currentMessage,
+    clearProgress 
+  } = useProcessParcelStream()
+
+  // Auto-scroll stream log
+  useEffect(() => {
+    if (streamLogRef.current && progress.length > 0) {
+      streamLogRef.current.scrollTop = streamLogRef.current.scrollHeight
+    }
+  }, [progress])
+
+  // Handle stream completion
+  useEffect(() => {
+    if (currentMessage?.type === 'complete') {
+      queryClient.invalidateQueries({ queryKey: ['parking-lot', parkingLotId] })
+    }
+  }, [currentMessage, queryClient, parkingLotId])
 
   // Fetch saved prompts
   const { data: savedPrompts } = useQuery({
@@ -68,12 +119,11 @@ export default function ParkingLotDetailPage() {
     queryFn: scoringPromptsApi.list,
   })
 
-  // Analyze mutation (full flow: imagery → VLM → enrichment)
+  // Legacy analyze mutation (fallback)
   const analyzeMutation = useMutation({
     mutationFn: (request: AnalyzePropertyRequest) => 
       parkingLotsApi.analyzeProperty(parkingLotId, request),
     onSuccess: (data) => {
-      // Store enrichment result if available from the full analysis
       if (data.enrichment?.steps || data.enrichment?.detailed_steps) {
         setEnrichmentResult({ 
           steps: data.enrichment.steps,
@@ -89,7 +139,6 @@ export default function ParkingLotDetailPage() {
   const enrichMutation = useMutation({
     mutationFn: () => parkingLotsApi.enrichProperty(parkingLotId),
     onSuccess: (data) => {
-      // Store the enrichment result to show flow
       if (data.enrichment_flow || data.enrichment_steps || data.enrichment_detailed_steps) {
         setEnrichmentResult({ 
           flow: data.enrichment_flow, 
@@ -101,14 +150,39 @@ export default function ParkingLotDetailPage() {
     },
   })
 
-  const handleAnalyze = () => {
-    const request: AnalyzePropertyRequest = {}
-    if (useCustom && customPrompt.trim()) {
-      request.custom_prompt = customPrompt.trim()
-    } else if (selectedPromptId) {
-      request.scoring_prompt_id = selectedPromptId
-    }
-    analyzeMutation.mutate(request)
+  const handleAnalyze = async () => {
+    // Use streaming endpoint
+    clearProgress()
+    await startProcessing({
+      propertyId: parkingLotId,
+      scoringPromptId: !useCustom && selectedPromptId ? selectedPromptId : undefined,
+      customPrompt: useCustom && customPrompt.trim() ? customPrompt.trim() : undefined,
+    })
+  }
+
+  const renderProgressItem = (item: ProcessParcelProgress, index: number) => {
+    const display = PROGRESS_DISPLAY[item.type] || { icon: '•', color: 'text-stone-400' }
+    const isLatest = index === progress.length - 1
+    
+    return (
+      <div 
+        key={index} 
+        className={cn(
+          'flex items-start gap-2 py-1',
+          isLatest && isProcessing && 'animate-pulse'
+        )}
+      >
+        <span className={cn('font-mono text-xs w-4 text-center', display.color)}>
+          {display.icon}
+        </span>
+        <span className={cn(
+          'text-xs flex-1',
+          isLatest ? 'text-stone-700' : 'text-stone-500'
+        )}>
+          {item.message}
+        </span>
+      </div>
+    )
   }
 
   const handleCopyLink = () => {
@@ -695,16 +769,12 @@ export default function ParkingLotDetailPage() {
                     <span className="text-xs text-stone-400">Not yet analyzed</span>
                     <button
                       onClick={() => setShowAnalyzeModal(true)}
-                      disabled={!parkingLot.satellite_image_base64}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 hover:bg-violet-50 rounded-md transition-colors disabled:text-stone-400 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
                     >
-                      <Sparkles className="h-3 w-3" />
-                      Analyze
+                      <Play className="h-3 w-3" />
+                      Process Parcel
                     </button>
                   </div>
-                  {!parkingLot.satellite_image_base64 && (
-                    <p className="text-[10px] text-stone-400 mt-1.5">Capture imagery first</p>
-                )}
                 </div>
               </div>
             )}
@@ -756,7 +826,7 @@ export default function ParkingLotDetailPage() {
       {showAnalyzeModal && (
         <div 
           className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-          onClick={() => !analyzeMutation.isPending && setShowAnalyzeModal(false)}
+          onClick={() => !isProcessing && setShowAnalyzeModal(false)}
         >
           <div 
             className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden"
@@ -764,11 +834,18 @@ export default function ParkingLotDetailPage() {
           >
             {/* Header */}
             <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between">
-              <span className="text-sm font-medium text-stone-700">Select Scoring Criteria</span>
+              <span className="text-sm font-medium text-stone-700">
+                {isProcessing ? 'Processing Parcel' : currentMessage?.type === 'complete' ? 'Processing Complete' : 'Select Scoring Criteria'}
+              </span>
               <button
-                onClick={() => setShowAnalyzeModal(false)}
-                disabled={analyzeMutation.isPending}
-                className="p-1 rounded hover:bg-stone-100 transition-colors disabled:opacity-50"
+                onClick={() => {
+                  if (isProcessing) {
+                    stopProcessing()
+                  }
+                  setShowAnalyzeModal(false)
+                  clearProgress()
+                }}
+                className="p-1 rounded hover:bg-stone-100 transition-colors"
               >
                 <X className="h-4 w-4 text-stone-400" />
               </button>
@@ -776,112 +853,167 @@ export default function ParkingLotDetailPage() {
 
             {/* Content */}
             <div className="p-4 space-y-3">
-              {/* Saved Prompts */}
-              {savedPrompts && savedPrompts.length > 0 ? (
-                <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                  {savedPrompts.map((prompt) => (
-                    <button
-                      key={prompt.id}
-                      onClick={() => {
-                        setSelectedPromptId(prompt.id)
-                        setUseCustom(false)
-                      }}
-                      disabled={analyzeMutation.isPending}
-                      className={cn(
-                        'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all',
-                        selectedPromptId === prompt.id && !useCustom
-                          ? 'bg-violet-50 border-violet-300'
-                          : 'bg-stone-50 border-stone-200 hover:bg-stone-100'
+              {/* Streaming Progress View */}
+              {(isProcessing || progress.length > 0) ? (
+                <div className="space-y-3">
+                  {/* Stream Log */}
+                  <div 
+                    ref={streamLogRef}
+                    className="bg-stone-900 rounded-lg p-3 h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-stone-700 scrollbar-track-transparent"
+                  >
+                    {progress.length === 0 ? (
+                      <div className="flex items-center justify-center h-full">
+                        <Loader2 className="h-5 w-5 animate-spin text-stone-500" />
+                      </div>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {progress.map((item, idx) => renderProgressItem(item, idx))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Result Summary */}
+                  {currentMessage?.type === 'complete' && currentMessage.stats && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        <span className="text-xs font-medium text-emerald-700">Processing Complete</span>
+                      </div>
+                      {currentMessage.stats.lead_score != null && (
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-stone-600">Lead Score</span>
+                          <span className={cn(
+                            'font-bold',
+                            currentMessage.stats.lead_score >= 70 ? 'text-emerald-600' :
+                            currentMessage.stats.lead_score >= 40 ? 'text-amber-600' : 'text-stone-500'
+                          )}>
+                            {currentMessage.stats.lead_score}/100
+                          </span>
+                        </div>
                       )}
-                    >
-                      <div className={cn(
-                        'w-3.5 h-3.5 rounded-full border-2 shrink-0',
-                        selectedPromptId === prompt.id && !useCustom
-                          ? 'border-violet-500 bg-violet-500'
-                          : 'border-stone-300'
-                      )} />
-                      <span className="text-xs font-medium text-stone-700 truncate flex-1">
-                        {prompt.title}
-                      </span>
-                      {prompt.is_default && (
-                        <Star className="h-3 w-3 text-amber-500 fill-current shrink-0" />
-                      )}
-                    </button>
-                  ))}
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-stone-600">Contact Found</span>
+                        <span className={currentMessage.stats.has_contact ? 'text-emerald-600 font-medium' : 'text-stone-400'}>
+                          {currentMessage.stats.has_contact ? 'Yes' : 'No'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons when streaming */}
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    {isProcessing ? (
+                      <button
+                        onClick={stopProcessing}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-200 text-stone-700 text-xs font-medium rounded-lg hover:bg-stone-300 transition-colors"
+                      >
+                        <Pause className="h-3 w-3" />
+                        Cancel
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setShowAnalyzeModal(false)
+                          clearProgress()
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-800 text-white text-xs font-medium rounded-lg hover:bg-stone-900 transition-colors"
+                      >
+                        Done
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <p className="text-xs text-stone-400 text-center py-2">
-                  No saved prompts. Using default criteria.
-                </p>
-              )}
+                <>
+                  {/* Saved Prompts */}
+                  {savedPrompts && savedPrompts.length > 0 ? (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {savedPrompts.map((prompt) => (
+                        <button
+                          key={prompt.id}
+                          onClick={() => {
+                            setSelectedPromptId(prompt.id)
+                            setUseCustom(false)
+                          }}
+                          className={cn(
+                            'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all',
+                            selectedPromptId === prompt.id && !useCustom
+                              ? 'bg-violet-50 border-violet-300'
+                              : 'bg-stone-50 border-stone-200 hover:bg-stone-100'
+                          )}
+                        >
+                          <div className={cn(
+                            'w-3.5 h-3.5 rounded-full border-2 shrink-0',
+                            selectedPromptId === prompt.id && !useCustom
+                              ? 'border-violet-500 bg-violet-500'
+                              : 'border-stone-300'
+                          )} />
+                          <span className="text-xs font-medium text-stone-700 truncate flex-1">
+                            {prompt.title}
+                          </span>
+                          {prompt.is_default && (
+                            <Star className="h-3 w-3 text-amber-500 fill-current shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-stone-400 text-center py-2">
+                      No saved prompts. Using default criteria.
+                    </p>
+                  )}
 
-              {/* Custom Option */}
-              <button
-                onClick={() => {
-                  setUseCustom(true)
-                  setSelectedPromptId(null)
-                }}
-                disabled={analyzeMutation.isPending}
-                className={cn(
-                  'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all',
-                  useCustom
-                    ? 'bg-violet-50 border-violet-300'
-                    : 'bg-stone-50 border-stone-200 hover:bg-stone-100'
-                )}
-              >
-                <div className={cn(
-                  'w-3.5 h-3.5 rounded-full border-2 shrink-0',
-                  useCustom ? 'border-violet-500 bg-violet-500' : 'border-stone-300'
-                )} />
-                <span className="text-xs font-medium text-stone-700">Custom criteria</span>
-              </button>
+                  {/* Custom Option */}
+                  <button
+                    onClick={() => {
+                      setUseCustom(true)
+                      setSelectedPromptId(null)
+                    }}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all',
+                      useCustom
+                        ? 'bg-violet-50 border-violet-300'
+                        : 'bg-stone-50 border-stone-200 hover:bg-stone-100'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-3.5 h-3.5 rounded-full border-2 shrink-0',
+                      useCustom ? 'border-violet-500 bg-violet-500' : 'border-stone-300'
+                    )} />
+                    <span className="text-xs font-medium text-stone-700">Custom criteria</span>
+                  </button>
 
-              {useCustom && (
-                <textarea
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                  placeholder="HIGH: Large parking with damage...&#10;MEDIUM: Moderate paved areas...&#10;LOW: Small or well-maintained..."
-                  disabled={analyzeMutation.isPending}
-                  className="w-full h-20 px-3 py-2 text-xs border border-stone-200 rounded-lg resize-none focus:ring-1 focus:ring-violet-400 focus:border-violet-400"
-                />
-              )}
-
-              {/* Error */}
-              {analyzeMutation.isError && (
-                <div className="flex items-center gap-2 p-2 bg-red-50 rounded text-[11px] text-red-600">
-                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                  <span>Analysis failed</span>
-                </div>
+                  {useCustom && (
+                    <textarea
+                      value={customPrompt}
+                      onChange={(e) => setCustomPrompt(e.target.value)}
+                      placeholder="HIGH: Large parking with damage...&#10;MEDIUM: Moderate paved areas...&#10;LOW: Small or well-maintained..."
+                      className="w-full h-20 px-3 py-2 text-xs border border-stone-200 rounded-lg resize-none focus:ring-1 focus:ring-violet-400 focus:border-violet-400"
+                    />
+                  )}
+                </>
               )}
             </div>
 
-            {/* Footer */}
-            <div className="px-4 py-3 border-t border-stone-100 flex items-center justify-end gap-2">
-              <button
-                onClick={() => setShowAnalyzeModal(false)}
-                disabled={analyzeMutation.isPending}
-                className="px-3 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-100 rounded-lg transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzeMutation.isPending || (useCustom && !customPrompt.trim() && !selectedPromptId && savedPrompts?.length === 0)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-800 text-white text-xs font-medium rounded-lg hover:bg-stone-900 disabled:bg-stone-300 disabled:cursor-not-allowed transition-colors"
-              >
-                {analyzeMutation.isPending ? (
-                  <>
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Analyzing...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-3 w-3" />
-                    Run Analysis
-                  </>
-                )}
-              </button>
-            </div>
+            {/* Footer - only show when not streaming */}
+            {!isProcessing && progress.length === 0 && (
+              <div className="px-4 py-3 border-t border-stone-100 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setShowAnalyzeModal(false)}
+                  className="px-3 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAnalyze}
+                  disabled={useCustom && !customPrompt.trim() && !selectedPromptId && savedPrompts?.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:bg-stone-300 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Play className="h-3 w-3" />
+                  Process Parcel
+                </button>
+              </div>
+            )}
           </div>
       </div>
       )}

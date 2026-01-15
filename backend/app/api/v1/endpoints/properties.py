@@ -2,13 +2,15 @@
 Properties API - Renamed from parking_lots but keeps same URL structure for frontend compatibility.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import func
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 from uuid import UUID
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel
 from shapely.geometry import mapping
+import asyncio
 
 from app.db.base import get_db
 from app.models.property import Property
@@ -24,6 +26,7 @@ from app.core.vlm_analysis_service import vlm_analysis_service
 from app.core.apollo_enrichment_service import apollo_enrichment_service
 from app.core.lead_enrichment_service import lead_enrichment_service
 from app.core.llm_enrichment_service import llm_enrichment_service, EnrichmentStep
+from app.core.property_classifier import classify_property
 from geoalchemy2.shape import from_shape
 import json
 from shapely.geometry import Point
@@ -622,20 +625,393 @@ async def preview_property_at_location(
     return response
 
 
-@router.post("/{property_id}/analyze")
-async def analyze_property(
+async def _process_parcel_stream(
+    property_id: UUID,
+    user_id: UUID,
+    scoring_prompt: Optional[str],
+    user_api_key: Optional[str],
+    db: Session,
+) -> AsyncGenerator[str, None]:
+    """
+    Stream parcel processing: Regrid → VLM → LLM Enrichment
+    Yields SSE-formatted progress messages.
+    """
+    start_time = datetime.utcnow()
+    total_cost = 0.0
+    total_tokens = 0
+    
+    def sse_message(data: dict) -> str:
+        return f"data: {json.dumps(data)}\n\n"
+    
+    # Get property
+    prop = db.query(Property).filter(Property.id == property_id).first()
+    if not prop:
+        yield sse_message({"type": "error", "message": "Property not found"})
+        return
+    
+    short_address = (prop.address or "Unknown")[:40]
+    
+    # ============================================================
+    # STEP 1: REGRID DATA - Fetch/update all fields including LBCS
+    # ============================================================
+    yield sse_message({
+        "type": "started",
+        "message": f"Processing: {short_address}",
+        "details": "Fetching property records"
+    })
+    await asyncio.sleep(0.1)
+    
+    # Check if we need to fetch Regrid data
+    if not prop.regrid_id or not prop.lbcs_structure:
+        yield sse_message({
+            "type": "regrid",
+            "message": "Querying Regrid for parcel data...",
+        })
+        await asyncio.sleep(0.1)
+        
+        try:
+            centroid = to_shape(prop.centroid)
+            parcel = await regrid_service.get_parcel_by_point(centroid.y, centroid.x)
+            
+            if parcel:
+                # Store ALL Regrid fields (same as discovery flow)
+                prop.regrid_id = parcel.parcel_id
+                prop.regrid_apn = parcel.apn
+                prop.regrid_owner = parcel.owner
+                prop.regrid_owner2 = parcel.owner2
+                prop.regrid_owner_type = parcel.owner_type
+                prop.regrid_owner_address = parcel.mail_address
+                prop.regrid_owner_city = parcel.mail_city
+                prop.regrid_owner_state = parcel.mail_state
+                prop.regrid_land_use = parcel.land_use
+                prop.regrid_zoning = parcel.zoning
+                prop.regrid_zoning_desc = parcel.zoning_description
+                prop.regrid_year_built = str(parcel.year_built) if parcel.year_built else None
+                prop.regrid_area_acres = parcel.area_acres
+                prop.regrid_num_units = parcel.num_units
+                prop.regrid_num_stories = parcel.num_stories
+                prop.regrid_struct_style = parcel.struct_style
+                
+                # LBCS codes (critical for classification)
+                prop.lbcs_structure = parcel.lbcs_structure
+                prop.lbcs_structure_desc = parcel.lbcs_structure_desc
+                prop.lbcs_activity = parcel.lbcs_activity
+                prop.lbcs_function = parcel.lbcs_function
+                prop.lbcs_ownership = parcel.lbcs_ownership
+                prop.lbcs_site = parcel.lbcs_site
+                
+                # Store polygon if available
+                if parcel.polygon:
+                    try:
+                        prop.polygon = from_shape(parcel.polygon, srid=4326)
+                    except Exception:
+                        pass
+                
+                yield sse_message({
+                    "type": "regrid_complete",
+                    "message": f"Found: {parcel.owner or 'Unknown owner'}",
+                    "details": f"LBCS: {parcel.lbcs_structure or 'N/A'}"
+                })
+                await asyncio.sleep(0.1)
+            else:
+                yield sse_message({
+                    "type": "regrid_warning",
+                    "message": "No Regrid parcel found at location",
+                })
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"[ProcessParcel] Regrid error: {e}")
+            yield sse_message({
+                "type": "regrid_error",
+                "message": f"Regrid lookup failed: {str(e)[:50]}",
+            })
+    else:
+        yield sse_message({
+            "type": "regrid_complete",
+            "message": f"Using existing: {prop.regrid_owner or 'Unknown owner'}",
+            "details": f"LBCS: {prop.lbcs_structure or 'N/A'}"
+        })
+        await asyncio.sleep(0.1)
+    
+    # ============================================================
+    # STEP 2: CLASSIFY PROPERTY - Using LBCS codes
+    # ============================================================
+    yield sse_message({
+        "type": "classifying",
+        "message": "Classifying property type...",
+    })
+    await asyncio.sleep(0.1)
+    
+    classification = classify_property(
+        usecode=prop.regrid_land_use or "",
+        usedesc=prop.regrid_land_use or "",
+        zoning=prop.regrid_zoning or "",
+        lbcs_structure=prop.lbcs_structure,
+        lbcs_activity=prop.lbcs_activity,
+    )
+    prop.property_category = classification.value
+    
+    category_display = classification.value.replace("_", " ").title()
+    yield sse_message({
+        "type": "classified",
+        "message": f"Property type: {category_display}",
+        "category": classification.value
+    })
+    await asyncio.sleep(0.1)
+    
+    # ============================================================
+    # STEP 3: SATELLITE IMAGERY
+    # ============================================================
+    if not prop.satellite_image_base64:
+        yield sse_message({
+            "type": "imagery",
+            "message": "Capturing satellite view...",
+        })
+        await asyncio.sleep(0.1)
+        
+        try:
+            # Use polygon if available, otherwise centroid
+            if prop.polygon:
+                polygon = to_shape(prop.polygon)
+                imagery_result = await property_imagery_pipeline.get_property_image(
+                    polygon,
+                    address=prop.address
+                )
+            else:
+                centroid = to_shape(prop.centroid)
+                imagery_result = await property_imagery_pipeline.get_property_image(
+                    lat=centroid.y,
+                    lng=centroid.x,
+                    address=prop.address
+                )
+            
+            if imagery_result and imagery_result.success:
+                prop.satellite_image_base64 = imagery_result.image_base64
+                metadata = imagery_result.metadata or {}
+                prop.satellite_zoom = metadata.get("zoom_level")
+                if metadata.get("area_m2"):
+                    prop.area_m2 = metadata["area_m2"]
+                    prop.area_sqft = metadata["area_m2"] * 10.764
+                prop.status = "imagery_captured"
+                
+                yield sse_message({
+                    "type": "imagery_complete",
+                    "message": "Satellite imagery captured",
+                    "zoom": metadata.get("zoom_level")
+                })
+                await asyncio.sleep(0.1)
+            else:
+                yield sse_message({
+                    "type": "imagery_error",
+                    "message": "Failed to capture imagery"
+                })
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"[ProcessParcel] Imagery error: {e}")
+            yield sse_message({
+                "type": "imagery_error",
+                "message": f"Imagery failed: {str(e)[:50]}"
+            })
+    else:
+        yield sse_message({
+            "type": "imagery_complete",
+            "message": "Using existing satellite imagery",
+        })
+        await asyncio.sleep(0.1)
+    
+    # ============================================================
+    # STEP 4: VLM ANALYSIS
+    # ============================================================
+    if prop.satellite_image_base64:
+        yield sse_message({
+            "type": "analyzing",
+            "message": "AI analyzing property...",
+        })
+        await asyncio.sleep(0.1)
+        
+        try:
+            property_context = {
+                "address": prop.address,
+                "area_sqft": (float(prop.regrid_area_acres) * 43560) if prop.regrid_area_acres else None,
+                "property_type": classification.value,
+                "owner": prop.regrid_owner,
+            }
+            
+            vlm_result = await vlm_analysis_service.analyze_property(
+                image_base64=prop.satellite_image_base64,
+                property_context=property_context,
+                scoring_prompt=scoring_prompt,
+                user_api_key=user_api_key,
+            )
+            
+            if vlm_result and vlm_result.success:
+                prop.lead_score = vlm_result.lead_score
+                prop.lead_confidence = vlm_result.confidence
+                prop.analysis_notes = vlm_result.reasoning
+                prop.lead_quality = (
+                    'high' if vlm_result.lead_score >= 70
+                    else 'medium' if vlm_result.lead_score >= 40
+                    else 'low'
+                )
+                prop.analyzed_at = datetime.utcnow()
+                prop.status = "analyzed"
+                
+                if vlm_result.usage:
+                    total_cost += vlm_result.usage.cost or 0
+                    total_tokens += vlm_result.usage.total_tokens or 0
+                
+                # Store observations if available
+                if vlm_result.observations:
+                    prop.paved_percentage = vlm_result.observations.paved_area_pct
+                    prop.building_percentage = vlm_result.observations.building_pct
+                    prop.landscaping_percentage = vlm_result.observations.landscaping_pct
+                
+                score = vlm_result.lead_score or 0
+                score_label = "High" if score >= 70 else "Medium" if score >= 40 else "Low"
+                
+                yield sse_message({
+                    "type": "scoring",
+                    "message": f"Lead score: {score}/100 ({score_label})",
+                    "score": score,
+                    "reasoning": vlm_result.reasoning[:100] if vlm_result.reasoning else None
+                })
+                await asyncio.sleep(0.1)
+            else:
+                yield sse_message({
+                    "type": "analyzing_error",
+                    "message": f"VLM analysis failed: {vlm_result.error_message if vlm_result else 'Unknown error'}"
+                })
+                
+        except Exception as e:
+            logger.error(f"[ProcessParcel] VLM error: {e}")
+            yield sse_message({
+                "type": "analyzing_error",
+                "message": f"Analysis failed: {str(e)[:50]}"
+            })
+    
+    # ============================================================
+    # STEP 5: LLM ENRICHMENT - Find decision-maker contact
+    # ============================================================
+    if prop.lead_score is not None:
+        yield sse_message({
+            "type": "enriching",
+            "message": "Finding property manager...",
+            "details": f"Strategy based on {category_display}"
+        })
+        await asyncio.sleep(0.1)
+        
+        try:
+            enrichment_result = await llm_enrichment_service.enrich(
+                address=prop.address or "",
+                property_type=classification.value,
+                owner_name=prop.regrid_owner,
+                lbcs_code=int(prop.lbcs_structure) if prop.lbcs_structure else None,
+            )
+            
+            # Always store enrichment steps
+            if enrichment_result.detailed_steps:
+                prop.enrichment_steps = json.dumps([
+                    step.to_dict() for step in enrichment_result.detailed_steps
+                ])
+            
+            if enrichment_result.success and enrichment_result.contact:
+                contact = enrichment_result.contact
+                prop.contact_name = contact.name
+                prop.contact_first_name = contact.first_name
+                prop.contact_last_name = contact.last_name
+                prop.contact_email = contact.email
+                prop.contact_phone = contact.phone
+                prop.contact_title = contact.title
+                prop.contact_company = enrichment_result.management_company
+                prop.contact_company_website = enrichment_result.management_website
+                prop.enrichment_source = "llm_enrichment"
+                prop.enrichment_status = "success"
+                prop.enrichment_confidence = enrichment_result.confidence
+                prop.enriched_at = datetime.utcnow()
+                
+                total_tokens += enrichment_result.tokens_used
+                
+                phone_display = contact.phone[:15] + "..." if contact.phone and len(contact.phone) > 15 else contact.phone
+                contact_msg = f"Contact found: {phone_display or contact.email or enrichment_result.management_company}"
+                
+                yield sse_message({
+                    "type": "contact_found",
+                    "message": contact_msg,
+                    "phone": contact.phone,
+                    "email": contact.email,
+                    "company": enrichment_result.management_company,
+                    "confidence": enrichment_result.confidence
+                })
+                await asyncio.sleep(0.1)
+            else:
+                prop.enrichment_status = "not_found"
+                total_tokens += enrichment_result.tokens_used
+                
+                yield sse_message({
+                    "type": "enrichment_complete",
+                    "message": "No contact info found",
+                    "steps_taken": len(enrichment_result.detailed_steps) if enrichment_result.detailed_steps else 0
+                })
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"[ProcessParcel] Enrichment error: {e}")
+            prop.enrichment_status = "error"
+            yield sse_message({
+                "type": "enrichment_error",
+                "message": f"Enrichment failed: {str(e)[:50]}"
+            })
+    
+    # ============================================================
+    # COMPLETE
+    # ============================================================
+    db.commit()
+    db.refresh(prop)
+    
+    duration = (datetime.utcnow() - start_time).total_seconds()
+    
+    # Log usage
+    if total_tokens > 0:
+        usage_tracking_service.log_openrouter_call(
+            db=db,
+            user_id=user_id,
+            property_id=prop.id,
+            model=vlm_analysis_service.DEFAULT_MODEL,
+            tokens_used=total_tokens,
+            actual_cost=total_cost,
+            metadata={"operation": "process_parcel_stream"},
+        )
+    
+    yield sse_message({
+        "type": "complete",
+        "message": "Processing complete",
+        "stats": {
+            "lead_score": float(prop.lead_score) if prop.lead_score else None,
+            "has_contact": bool(prop.contact_email or prop.contact_phone),
+            "duration": f"{duration:.1f}s",
+            "cost": f"${total_cost:.4f}" if total_cost > 0 else None
+        }
+    })
+
+
+@router.post("/{property_id}/process/stream")
+async def process_parcel_stream(
     property_id: UUID,
     request: AnalyzePropertyRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Full property analysis following discovery flow:
-    1. Fetch satellite imagery if not present
-    2. Run VLM lead scoring
-    3. Run LLM enrichment for decision-maker contact
+    Stream parcel processing following the full discovery flow:
+    1. Fetch/update Regrid data (including LBCS codes)
+    2. Classify property type based on LBCS
+    3. Capture satellite imagery
+    4. Run VLM lead scoring
+    5. Run LLM enrichment for decision-maker contact
     
-    Returns all results including imagery status, VLM analysis, and enrichment data.
+    Returns SSE stream with progress updates.
     """
     # Get property
     prop = db.query(Property).filter(
@@ -668,263 +1044,97 @@ async def analyze_property(
             scoring_prompt = default_prompt.prompt
     
     # Get user's OpenRouter key if enabled
-    user_openrouter_key = None
+    user_api_key = None
     if current_user.use_own_openrouter_key and current_user.openrouter_api_key:
-        user_openrouter_key = current_user.openrouter_api_key
-        logger.info(f"Using user's OpenRouter API key for analysis")
+        user_api_key = current_user.openrouter_api_key
     
-    result = {
-        "success": True,
-        "property_id": str(prop.id),
-        "steps_completed": [],
-    }
-    
-    total_cost = 0.0
-    total_tokens = 0
-    
-    # ============================================================
-    # STEP 1: IMAGERY - Fetch if not present
-    # ============================================================
-    imagery_result_data = None
-    
-    if not prop.satellite_image_base64:
-        logger.info(f"[Analyze] Fetching satellite imagery for property {property_id}")
-        result["steps_completed"].append("imagery_fetch")
-        
-        try:
-            # Get polygon from stored geometry or Regrid
-            polygon = None
-            if prop.polygon:
-                polygon = to_shape(prop.polygon)
-            elif prop.centroid:
-                # Try to get polygon from Regrid
-                centroid = to_shape(prop.centroid)
-                parcel = await regrid_service.get_parcel_by_point(centroid.y, centroid.x)
-                if parcel and parcel.polygon:
-                    polygon = parcel.polygon
-                    # Update property with parcel data
-                    prop.polygon = from_shape(polygon, srid=4326)
-                    prop.regrid_id = parcel.id
-                    prop.regrid_apn = parcel.apn
-                    prop.regrid_owner = parcel.owner
-                    prop.regrid_land_use = parcel.land_use
-                    if parcel.area_acres:
-                        prop.regrid_area_acres = parcel.area_acres
-            
-            if polygon:
-                # Fetch satellite imagery
-                imagery_result = await property_imagery_pipeline.get_property_image(polygon, address=prop.address)
-                
-                if imagery_result.success:
-                    prop.satellite_image_base64 = imagery_result.image_base64
-                    prop.satellite_zoom = imagery_result.metadata.get("zoom_level")
-                    if imagery_result.metadata.get("area_m2"):
-                        prop.area_m2 = imagery_result.metadata["area_m2"]
-                        prop.area_sqft = imagery_result.metadata["area_m2"] * 10.764
-                    prop.status = "imagery_captured"
-                    
-                    imagery_result_data = {
-                        "success": True,
-                        "zoom_level": imagery_result.metadata.get("zoom_level"),
-                        "area_m2": imagery_result.metadata.get("area_m2"),
-                    }
-                    logger.info(f"[Analyze] Imagery captured successfully")
-                else:
-                    imagery_result_data = {"success": False, "error": "Failed to capture imagery"}
-                    logger.warning(f"[Analyze] Imagery capture failed")
-            else:
-                imagery_result_data = {"success": False, "error": "No polygon available"}
-                logger.warning(f"[Analyze] No polygon available for imagery")
-                
-        except Exception as e:
-            logger.error(f"[Analyze] Imagery error: {e}")
-            imagery_result_data = {"success": False, "error": str(e)}
-    else:
-        imagery_result_data = {"success": True, "already_captured": True}
-    
-    result["imagery"] = imagery_result_data
-    
-    # ============================================================
-    # STEP 2: VLM ANALYSIS - Score the lead
-    # ============================================================
-    vlm_result_data = None
-    
-    if prop.satellite_image_base64:
-        logger.info(f"[Analyze] Running VLM analysis on property {property_id}")
-        result["steps_completed"].append("vlm_analysis")
-        
-        # Build property context
-        property_context = {
-            "address": prop.address,
-            "owner": prop.regrid_owner,
-            "land_use": prop.regrid_land_use,
-            "area_acres": float(prop.regrid_area_acres) if prop.regrid_area_acres else None,
-            "zoning": prop.regrid_zoning,
+    return StreamingResponse(
+        _process_parcel_stream(
+            property_id=property_id,
+            user_id=current_user.id,
+            scoring_prompt=scoring_prompt,
+            user_api_key=user_api_key,
+            db=db,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
-        
-        try:
-            vlm_result = await vlm_analysis_service.analyze_property(
-                image_base64=prop.satellite_image_base64,
-                scoring_prompt=scoring_prompt,
-                property_context=property_context,
-                user_api_key=user_openrouter_key,
-            )
-            
-            if vlm_result.success:
-                # Update property with VLM results
-                prop.lead_score = vlm_result.lead_score
-                prop.lead_quality = (
-                    'high' if vlm_result.lead_score >= 70 
-                    else 'medium' if vlm_result.lead_score >= 40 
-                    else 'low'
-                )
-                prop.analysis_notes = vlm_result.reasoning
-                prop.analyzed_at = datetime.utcnow()
-                prop.status = "analyzed"
-                
-                # Store surface breakdown if available
-                if vlm_result.observations:
-                    prop.paved_percentage = vlm_result.observations.paved_area_pct
-                    prop.building_percentage = vlm_result.observations.building_pct
-                    prop.landscaping_percentage = vlm_result.observations.landscaping_pct
-                    prop.asphalt_condition_score = (
-                        90 if vlm_result.observations.condition == 'critical' else
-                        70 if vlm_result.observations.condition == 'poor' else
-                        50 if vlm_result.observations.condition == 'fair' else
-                        30 if vlm_result.observations.condition == 'good' else
-                        10
-                    )
-                
-                if vlm_result.usage:
-                    total_cost += vlm_result.usage.cost or 0
-                    total_tokens += vlm_result.usage.total_tokens or 0
-                
-                vlm_result_data = {
-                    "success": True,
-                    "lead_score": vlm_result.lead_score,
-                    "lead_quality": prop.lead_quality,
-                    "confidence": vlm_result.confidence,
-                    "reasoning": vlm_result.reasoning,
-                    "observations": {
-                        "paved_area_pct": vlm_result.observations.paved_area_pct if vlm_result.observations else None,
-                        "building_pct": vlm_result.observations.building_pct if vlm_result.observations else None,
-                        "landscaping_pct": vlm_result.observations.landscaping_pct if vlm_result.observations else None,
-                        "condition": vlm_result.observations.condition if vlm_result.observations else None,
-                        "visible_issues": vlm_result.observations.visible_issues if vlm_result.observations else [],
-                    } if vlm_result.observations else None,
-                }
-                logger.info(f"[Analyze] VLM score: {vlm_result.lead_score}")
-            else:
-                vlm_result_data = {"success": False, "error": vlm_result.error_message}
-                logger.warning(f"[Analyze] VLM failed: {vlm_result.error_message}")
-                
-        except Exception as e:
-            logger.error(f"[Analyze] VLM error: {e}")
-            vlm_result_data = {"success": False, "error": str(e)}
-    else:
-        vlm_result_data = {"success": False, "error": "No satellite image available"}
+    )
+
+
+@router.post("/{property_id}/analyze")
+async def analyze_property(
+    property_id: UUID,
+    request: AnalyzePropertyRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Non-streaming version of parcel processing.
+    For backwards compatibility - prefer /process/stream for new implementations.
+    """
+    # Get property
+    prop = db.query(Property).filter(
+        Property.id == property_id,
+        Property.user_id == current_user.id
+    ).first()
     
-    result["vlm_analysis"] = vlm_result_data
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
     
-    # ============================================================
-    # STEP 3: LLM ENRICHMENT - Find decision-maker contact
-    # ============================================================
-    enrichment_result_data = None
+    # Get scoring prompt
+    scoring_prompt = None
+    if request.scoring_prompt_id:
+        saved_prompt = db.query(ScoringPrompt).filter(
+            ScoringPrompt.id == request.scoring_prompt_id,
+            ScoringPrompt.user_id == current_user.id
+        ).first()
+        if saved_prompt:
+            scoring_prompt = saved_prompt.prompt
+    elif request.custom_prompt:
+        scoring_prompt = request.custom_prompt
     
-    # Only run enrichment if VLM analysis was successful
-    if vlm_result_data and vlm_result_data.get("success"):
-        logger.info(f"[Analyze] Running LLM enrichment for property {property_id}")
-        result["steps_completed"].append("llm_enrichment")
-        
-        try:
-            # Determine property type for enrichment strategy
-            property_type = prop.property_category or "commercial"
-            
-            enrichment_result = await llm_enrichment_service.enrich(
-                address=prop.address,
-                property_type=property_type,
-                owner_name=prop.regrid_owner,
-            )
-            
-            if enrichment_result.success and enrichment_result.contact:
-                contact = enrichment_result.contact
-                
-                # Update property with contact info
-                prop.contact_name = contact.name
-                prop.contact_first_name = contact.first_name
-                prop.contact_last_name = contact.last_name
-                prop.contact_email = contact.email
-                prop.contact_phone = contact.phone
-                prop.contact_title = contact.title
-                prop.contact_company = contact.company
-                prop.enrichment_confidence = enrichment_result.confidence
-                prop.enrichment_status = "success"
-                
-                logger.info(f"[Analyze] Contact found: {contact.phone or contact.email}")
-            else:
-                prop.enrichment_status = "no_contact"
-                logger.info(f"[Analyze] No contact found")
-            
-            # Always store enrichment steps for UI visualization
-            if enrichment_result.detailed_steps:
-                prop.enrichment_steps = json.dumps([
-                    step.to_dict() for step in enrichment_result.detailed_steps
-                ])
-            
-            total_tokens += enrichment_result.tokens_used
-            
-            enrichment_result_data = {
-                "success": enrichment_result.success,
-                "contact": {
-                    "name": enrichment_result.contact.name if enrichment_result.contact else None,
-                    "email": enrichment_result.contact.email if enrichment_result.contact else None,
-                    "phone": enrichment_result.contact.phone if enrichment_result.contact else None,
-                    "title": enrichment_result.contact.title if enrichment_result.contact else None,
-                    "company": enrichment_result.contact.company if enrichment_result.contact else None,
-                } if enrichment_result.contact else None,
-                "confidence": enrichment_result.confidence,
-                "steps": enrichment_result.steps,
-                "detailed_steps": [step.to_dict() for step in enrichment_result.detailed_steps] if enrichment_result.detailed_steps else [],
-            }
-            
-        except Exception as e:
-            logger.error(f"[Analyze] Enrichment error: {e}")
-            enrichment_result_data = {"success": False, "error": str(e)}
+    if not scoring_prompt:
+        default_prompt = db.query(ScoringPrompt).filter(
+            ScoringPrompt.user_id == current_user.id,
+            ScoringPrompt.is_default == True
+        ).first()
+        if default_prompt:
+            scoring_prompt = default_prompt.prompt
     
-    result["enrichment"] = enrichment_result_data
+    user_api_key = None
+    if current_user.use_own_openrouter_key and current_user.openrouter_api_key:
+        user_api_key = current_user.openrouter_api_key
     
-    # ============================================================
-    # FINALIZE AND RETURN
-    # ============================================================
-    db.commit()
+    # Collect results from stream
+    results = []
+    async for msg in _process_parcel_stream(
+        property_id=property_id,
+        user_id=current_user.id,
+        scoring_prompt=scoring_prompt,
+        user_api_key=user_api_key,
+        db=db,
+    ):
+        # Parse SSE message
+        if msg.startswith("data: "):
+            data = json.loads(msg[6:].strip())
+            results.append(data)
+    
+    # Return final state
     db.refresh(prop)
     
-    # Log usage
-    if total_tokens > 0:
-        usage_tracking_service.log_openrouter_call(
-            db=db,
-            user_id=current_user.id,
-            property_id=prop.id,
-            model=vlm_analysis_service.DEFAULT_MODEL,
-            tokens_used=total_tokens,
-            actual_cost=total_cost,
-            metadata={"operation": "full_property_analysis"},
-        )
-    
-    result["usage"] = {
-        "tokens": total_tokens,
-        "cost": total_cost,
+    return {
+        "success": prop.lead_score is not None,
+        "property_id": str(prop.id),
+        "lead_score": float(prop.lead_score) if prop.lead_score else None,
+        "lead_quality": prop.lead_quality,
+        "property_category": prop.property_category,
+        "has_contact": bool(prop.contact_email or prop.contact_phone),
+        "steps": results,
     }
-    
-    # Overall success is based on VLM success (enrichment is optional)
-    result["success"] = vlm_result_data.get("success", False) if vlm_result_data else False
-    
-    # Include final property state
-    result["lead_score"] = float(prop.lead_score) if prop.lead_score else None
-    result["lead_quality"] = prop.lead_quality
-    result["has_contact"] = bool(prop.contact_email or prop.contact_phone)
-    
-    return result
 
 
 @router.post("/{property_id}/enrich")

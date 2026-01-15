@@ -1,21 +1,28 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { 
   X, 
   Loader2, 
   User,
-  Camera,
   CheckCircle2,
   AlertCircle,
   ArrowRight,
   RotateCcw,
   Crosshair,
-  Layers
+  Layers,
+  Play,
+  Building2,
+  Phone,
+  Mail,
+  TrendingUp,
+  Pause
 } from 'lucide-react'
 import { parkingLotsApi, RegridLookupResponse, PropertyPreviewResponse } from '@/lib/api/parking-lots'
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
+import { useProcessParcelStream, ProcessParcelProgress } from '@/lib/hooks/use-process-parcel-stream'
+import { cn } from '@/lib/utils'
 
 interface PropertyPreviewCardProps {
   lat: number
@@ -25,17 +32,75 @@ interface PropertyPreviewCardProps {
   onDiscoverArea?: () => void
 }
 
-type Phase = 'choice' | 'loading_regrid' | 'regrid_ready' | 'capturing' | 'complete' | 'error' | 'no_parcel'
+type Phase = 'choice' | 'loading_regrid' | 'regrid_ready' | 'processing' | 'complete' | 'error' | 'no_parcel'
+
+// Map progress types to display info
+const PROGRESS_DISPLAY: Record<string, { icon: string; color: string }> = {
+  started: { icon: '▶', color: 'text-stone-500' },
+  regrid: { icon: '◎', color: 'text-amber-500' },
+  regrid_complete: { icon: '✓', color: 'text-emerald-500' },
+  regrid_warning: { icon: '!', color: 'text-amber-500' },
+  regrid_error: { icon: '✗', color: 'text-red-500' },
+  classifying: { icon: '◎', color: 'text-violet-500' },
+  classified: { icon: '✓', color: 'text-violet-500' },
+  imagery: { icon: '◎', color: 'text-sky-500' },
+  imagery_complete: { icon: '✓', color: 'text-sky-500' },
+  imagery_error: { icon: '✗', color: 'text-red-500' },
+  analyzing: { icon: '◎', color: 'text-orange-500' },
+  analyzing_error: { icon: '✗', color: 'text-red-500' },
+  scoring: { icon: '★', color: 'text-amber-500' },
+  enriching: { icon: '◎', color: 'text-emerald-500' },
+  enrichment_complete: { icon: '✓', color: 'text-stone-400' },
+  enrichment_error: { icon: '✗', color: 'text-red-500' },
+  contact_found: { icon: '✓', color: 'text-emerald-500' },
+  complete: { icon: '✓', color: 'text-emerald-500' },
+  error: { icon: '✗', color: 'text-red-500' },
+}
 
 export function PropertyPreviewCard({ lat, lng, onClose, onPolygonReady, onDiscoverArea }: PropertyPreviewCardProps) {
   const router = useRouter()
   const queryClient = useQueryClient()
+  const streamLogRef = useRef<HTMLDivElement>(null)
   
   const [phase, setPhase] = useState<Phase>('choice')
   const [regridData, setRegridData] = useState<RegridLookupResponse | null>(null)
-  const [captureData, setCaptureData] = useState<PropertyPreviewResponse | null>(null)
+  const [propertyId, setPropertyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showImage, setShowImage] = useState(false)
+  const [finalStats, setFinalStats] = useState<ProcessParcelProgress['stats'] | null>(null)
+  const [contactInfo, setContactInfo] = useState<{ phone?: string; email?: string; company?: string } | null>(null)
+
+  const { 
+    startProcessing, 
+    stopProcessing, 
+    isProcessing, 
+    progress, 
+    currentMessage,
+    clearProgress 
+  } = useProcessParcelStream()
+
+  // Auto-scroll stream log
+  useEffect(() => {
+    if (streamLogRef.current && progress.length > 0) {
+      streamLogRef.current.scrollTop = streamLogRef.current.scrollHeight
+    }
+  }, [progress])
+
+  // Handle completion from stream
+  useEffect(() => {
+    if (currentMessage?.type === 'complete') {
+      setPhase('complete')
+      setFinalStats(currentMessage.stats || null)
+    } else if (currentMessage?.type === 'contact_found') {
+      setContactInfo({
+        phone: currentMessage.phone,
+        email: currentMessage.email,
+        company: currentMessage.company,
+      })
+    } else if (currentMessage?.type === 'error') {
+      setPhase('error')
+      setError(currentMessage.message)
+    }
+  }, [currentMessage])
 
   const handleAnalyzeProperty = async () => {
     setPhase('loading_regrid')
@@ -57,28 +122,41 @@ export function PropertyPreviewCard({ lat, lng, onClose, onPolygonReady, onDisco
     }
   }
 
-  const handleCapture = async () => {
-    setPhase('capturing')
+  const handleProcessParcel = async () => {
+    setPhase('processing')
     setError(null)
+    clearProgress()
+    setFinalStats(null)
+    setContactInfo(null)
     
     try {
-      const data = await parkingLotsApi.captureProperty({ 
+      // First capture the property to get a property_id
+      const captureData = await parkingLotsApi.captureProperty({ 
         lat, lng, 
         address: regridData?.parcel?.address,
         zoom: 20 
       })
-      setCaptureData(data)
-      setPhase('complete')
+      
+      if (!captureData?.property_id) {
+        throw new Error('Failed to create property')
+      }
+      
+      setPropertyId(captureData.property_id)
       queryClient.invalidateQueries({ queryKey: ['deals'] })
+      
+      // Now start the streaming process
+      await startProcessing({
+        propertyId: captureData.property_id,
+      })
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Capture failed')
+      setError(err.response?.data?.detail || err.message || 'Processing failed')
       setPhase('error')
     }
   }
 
   const handleViewDetails = () => {
-    if (captureData?.property_id) {
-      router.push(`/parking-lots/${captureData.property_id}`)
+    if (propertyId) {
+      router.push(`/parking-lots/${propertyId}`)
     }
   }
 
@@ -86,14 +164,42 @@ export function PropertyPreviewCard({ lat, lng, onClose, onPolygonReady, onDisco
     setPhase('choice')
     setError(null)
     setRegridData(null)
-    setCaptureData(null)
+    setPropertyId(null)
+    setFinalStats(null)
+    setContactInfo(null)
+    clearProgress()
   }
 
   const fmt = (n: number | undefined | null, decimals = 0) => 
     n == null ? '—' : n.toLocaleString(undefined, { maximumFractionDigits: decimals })
 
+  const renderProgressItem = (item: ProcessParcelProgress, index: number) => {
+    const display = PROGRESS_DISPLAY[item.type] || { icon: '•', color: 'text-stone-400' }
+    const isLatest = index === progress.length - 1
+    
+    return (
+      <div 
+        key={index} 
+        className={cn(
+          'flex items-start gap-2 py-1',
+          isLatest && isProcessing && 'animate-pulse'
+        )}
+      >
+        <span className={cn('font-mono text-xs w-4 text-center', display.color)}>
+          {display.icon}
+        </span>
+        <span className={cn(
+          'text-xs flex-1',
+          isLatest ? 'text-stone-700' : 'text-stone-500'
+        )}>
+          {item.message}
+        </span>
+      </div>
+    )
+  }
+
   return (
-    <div className="bg-stone-50 text-stone-800 rounded-lg shadow-lg border border-stone-200 overflow-hidden w-72 text-sm">
+    <div className="bg-stone-50 text-stone-800 rounded-lg shadow-lg border border-stone-200 overflow-hidden w-80 text-sm">
       {/* Header */}
       <div className="px-3 py-2 border-b border-stone-200 flex items-center justify-between bg-stone-100/80">
         <div className="flex items-center gap-2">
@@ -188,71 +294,123 @@ export function PropertyPreviewCard({ lat, lng, onClose, onPolygonReady, onDisco
               </div>
             </div>
 
-            {/* Capture */}
+            {/* Process Parcel Button */}
             <button
-              onClick={handleCapture}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium transition-colors"
+              onClick={handleProcessParcel}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium transition-colors"
             >
-              <Camera className="h-3.5 w-3.5" />
-              Capture Imagery
+              <Play className="h-3.5 w-3.5" />
+              Process Parcel
             </button>
             <div className="text-[10px] text-stone-400 text-center">
-              {(regridData.parcel.area_acres || 0) > 10 ? '~60-120s for large parcels' : '~10-30s'}
+              Full analysis: imagery, VLM scoring, contact enrichment
             </div>
           </div>
         )}
 
-        {/* ===== CAPTURING ===== */}
-        {phase === 'capturing' && (
-          <div className="flex items-center gap-2 py-2">
-            <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
-            <span className="text-xs text-stone-500">Capturing satellite imagery...</span>
+        {/* ===== PROCESSING (Streaming) ===== */}
+        {phase === 'processing' && (
+          <div className="space-y-3">
+            {/* Address Header */}
+            {regridData?.parcel?.address && (
+              <div className="font-medium text-stone-900 truncate text-[13px]">
+                {regridData.parcel.address}
+              </div>
+            )}
+            
+            {/* Stream Log */}
+            <div 
+              ref={streamLogRef}
+              className="bg-stone-900 rounded-lg p-2 h-40 overflow-y-auto scrollbar-thin scrollbar-thumb-stone-700 scrollbar-track-transparent"
+            >
+              {progress.length === 0 ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 className="h-5 w-5 animate-spin text-stone-500" />
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  {progress.map((item, idx) => renderProgressItem(item, idx))}
+                </div>
+              )}
+            </div>
+
+            {/* Stop Button */}
+            <button
+              onClick={stopProcessing}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-stone-200 hover:bg-stone-300 rounded text-xs transition-colors text-stone-600"
+            >
+              <Pause className="h-3 w-3" />
+              Cancel
+            </button>
           </div>
         )}
 
         {/* ===== COMPLETE ===== */}
-        {phase === 'complete' && captureData && (
+        {phase === 'complete' && (
           <div className="space-y-3">
-            {/* Success */}
+            {/* Success Header */}
             <div className="flex items-center gap-1.5 text-emerald-600 text-xs">
               <CheckCircle2 className="h-3.5 w-3.5" />
-              <span>Property saved</span>
+              <span>Processing complete</span>
             </div>
 
-            {/* Image */}
-            {captureData.image_base64 && (
-              <div 
-                onClick={() => setShowImage(!showImage)}
-                className="relative rounded overflow-hidden cursor-pointer border border-stone-200"
-              >
-                <img 
-                  src={`data:image/jpeg;base64,${captureData.image_base64}`}
-                  alt="Satellite"
-                  className={`w-full ${showImage ? 'h-auto' : 'h-24 object-cover'}`}
-                />
-                {!showImage && (
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-stone-900/80 to-transparent px-2 py-1">
-                    <span className="text-[10px] text-white/80">
-                      {captureData.image_size.width}×{captureData.image_size.height}
-                    </span>
+            {/* Results Summary */}
+            <div className="space-y-2">
+              {/* Lead Score */}
+              {finalStats?.lead_score != null && (
+                <div className="bg-stone-100 rounded-lg p-2.5 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4 text-amber-500" />
+                    <span className="text-xs text-stone-600">Lead Score</span>
                   </div>
-                )}
-              </div>
-            )}
+                  <span className={cn(
+                    'text-lg font-bold font-mono',
+                    finalStats.lead_score >= 70 ? 'text-emerald-600' :
+                    finalStats.lead_score >= 40 ? 'text-amber-600' : 'text-stone-500'
+                  )}>
+                    {finalStats.lead_score}
+                  </span>
+                </div>
+              )}
 
-            {/* Stats */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="bg-stone-100 rounded px-2 py-1.5">
-                <div className="text-stone-400 text-[10px] uppercase tracking-wide">Area</div>
-                <div className="font-mono text-stone-700">{fmt(captureData.area_sqft)} ft²</div>
-              </div>
-              <div className="bg-stone-100 rounded px-2 py-1.5">
-                <div className="text-stone-400 text-[10px] uppercase tracking-wide">Owner</div>
-                <div className="truncate text-stone-700">{captureData.regrid?.owner?.split(' ')[0] || '—'}</div>
-              </div>
+              {/* Contact Info */}
+              {contactInfo && (contactInfo.phone || contactInfo.email) ? (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 space-y-1.5">
+                  {contactInfo.company && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Building2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="text-stone-700 truncate">{contactInfo.company}</span>
+                    </div>
+                  )}
+                  {contactInfo.phone && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Phone className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="font-mono text-stone-700">{contactInfo.phone}</span>
+                    </div>
+                  )}
+                  {contactInfo.email && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Mail className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="text-stone-700 truncate">{contactInfo.email}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-stone-100 rounded-lg p-2.5 text-xs text-stone-500 text-center">
+                  No contact information found
+                </div>
+              )}
+
+              {/* Duration & Cost */}
+              {(finalStats?.duration || finalStats?.cost) && (
+                <div className="flex items-center justify-center gap-3 text-[10px] text-stone-400">
+                  {finalStats.duration && <span>{finalStats.duration}</span>}
+                  {finalStats.cost && <span>{finalStats.cost}</span>}
+                </div>
+              )}
             </div>
 
-            {/* View Details */}
+            {/* View Details Button */}
             <button
               onClick={handleViewDetails}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-stone-800 hover:bg-stone-700 text-white rounded text-xs font-medium transition-colors"
