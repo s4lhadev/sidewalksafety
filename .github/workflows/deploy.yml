@@ -82,9 +82,11 @@ jobs:
           script: |
             set -e
             
-            DEPLOY_PATH="${{ secrets.VM_DEPLOY_PATH || '/home/${{ secrets.VM_USER }}/worksight' }}"
-            FRONTEND_DOMAIN="${{ secrets.FRONTEND_DOMAIN || 'app.worksight.biz' }}"
-            BACKEND_DOMAIN="${{ secrets.BACKEND_DOMAIN || 'api.worksight.biz' }}"
+            # Get current user and set paths
+            VM_USER=$(whoami)
+            DEPLOY_PATH="${VM_DEPLOY_PATH:-/home/${VM_USER}/worksight}"
+            FRONTEND_DOMAIN="app.worksight.biz"
+            BACKEND_DOMAIN="api.worksight.biz"
             
             echo "📦 Starting deployment to $DEPLOY_PATH"
             
@@ -131,7 +133,7 @@ jobs:
             
             [Service]
             Type=simple
-            User=${{ secrets.VM_USER }}
+            User=${VM_USER}
             WorkingDirectory=$DEPLOY_PATH/backend
             Environment="PATH=$DEPLOY_PATH/backend/venv/bin"
             EnvironmentFile=$DEPLOY_PATH/backend/.env
@@ -151,7 +153,7 @@ jobs:
             
             [Service]
             Type=simple
-            User=${{ secrets.VM_USER }}
+            User=${VM_USER}
             WorkingDirectory=$DEPLOY_PATH/frontend
             Environment="NODE_ENV=production"
             Environment="PORT=3000"
