@@ -125,14 +125,18 @@ PROPERTY DATA:
 - Type: {property_type}
 - Owner (from records): {owner_name}
 
-Plan 6-10 diverse search strategies to find the property manager, leasing office, or management company contact.
-BE THOROUGH - try multiple angles:
+Based on the property type ({property_type}), I'm tailoring my search strategy to find decision-maker contacts.
+
+Plan 8-12 diverse search strategies to find the property manager, leasing office, or management company contact.
+BE THOROUGH - try multiple angles to CROSS-VALIDATE contacts:
 
 1. PROPERTY NAME SEARCHES: Search for the property itself on listing sites
-2. OWNER/COMPANY SEARCHES: Search for the owner company directly
+2. OWNER/COMPANY SEARCHES: Search for the owner company directly  
 3. ADDRESS VARIATIONS: Try different address formats
 4. MANAGEMENT COMPANY: Look for property management company
 5. DIRECT WEBSITES: Try likely website URLs
+6. LINKEDIN VALIDATION: Search for decision makers on LinkedIn
+7. MULTIPLE SOURCES: Use different sites to verify the same contact
 
 Return ONLY valid JSON (no markdown):
 {{
@@ -142,16 +146,21 @@ Return ONLY valid JSON (no markdown):
     {{"action": "search_google", "query": "owner company + property management"}},
     {{"action": "search_zillow", "query": "address search"}},
     {{"action": "search_yelp", "query": "property or management company"}},
+    {{"action": "search_linkedin", "query": "company name property manager"}},
+    {{"action": "search_linkedin", "query": "person name title company"}},
     {{"action": "visit_url", "url": "https://likely-website.com"}}
   ]
 }}
 
 Valid actions: search_apartments_com, search_google, search_zillow, search_yelp, search_linkedin, visit_url
 
-IMPORTANT: Generate at least 6 strategies with DIFFERENT queries and sources. Don't give up easy!"""
+IMPORTANT: 
+- Generate at least 8 strategies with DIFFERENT queries and sources
+- Include at least 2 LinkedIn searches to find and validate decision makers
+- Use multiple sources for cross-validation (don't stop at first result)"""
 
 
-ANALYZE_PAGE_PROMPT = """Extract ALL contact information from this webpage for a property manager or leasing office.
+ANALYZE_PAGE_PROMPT = """Extract ALL contact information from this webpage, PRIORITIZING DECISION-MAKERS.
 
 TARGET PROPERTY: {address} ({property_type})
 URL: {url}
@@ -159,26 +168,36 @@ URL: {url}
 PAGE CONTENT:
 {content}
 
-EXTRACT THOROUGHLY:
-1. Look for phone numbers (main office, leasing, management)
-2. Look for email addresses (leasing@, contact@, info@, manager@)
-3. Look for contact form links
-4. Look for management company names
-5. Look for staff/team pages with individual contacts
-6. Look for "Contact Us" or "About" links to follow
+EXTRACT THOROUGHLY - FOCUS ON DECISION-MAKERS:
+1. Look for named individuals with titles (Property Manager, Director, VP, Regional Manager, etc.)
+2. Look for "Meet the Team", "Our Staff", "Leadership" sections
+3. Look for phone numbers (prioritize direct lines over main office)
+4. Look for email addresses (prioritize personal emails over generic ones)
+5. Look for management company names and their contacts
+6. Look for "Contact Us", "About", "Team" links to follow
+
+DECISION-MAKER TITLES TO PRIORITIZE:
+- Vice President, Director, Regional Manager, Owner (HIGHEST)
+- Property Manager, Community Manager, Asset Manager (HIGH)
+- Leasing Manager, General Manager, Operations Manager (MEDIUM)
 
 Return ONLY valid JSON:
 {{
   "is_correct_property": true/false,
   "property_name": "Name if found",
-  "contacts_found": [{{"name": "Name", "title": "Title", "phone": "Phone", "email": "Email"}}],
+  "contacts_found": [
+    {{"name": "Full Name", "title": "Their Title", "phone": "Direct Phone", "email": "Email", "is_decision_maker": true/false}}
+  ],
   "management_company": "Company name if found",
   "management_phone": "Main phone if found",
   "management_email": "Main email if found",
-  "links_to_follow": [{{"href": "/contact", "reason": "Contact page"}}]
+  "links_to_follow": [{{"href": "/about", "reason": "Team page - likely has decision-maker contacts"}}]
 }}
 
-Be aggressive in extraction - capture ALL phone numbers and emails you see!"""
+IMPORTANT:
+- Extract EVERY named person you find, especially those with managerial titles
+- Include title information to help identify decision-makers
+- Prefer direct contact info over generic office numbers/emails"""
 
 
 VERIFY_PLACE_PROMPT = """Verify if this Google Places result matches the target property address.
@@ -198,34 +217,130 @@ Return ONLY valid JSON:
 Consider: street number, street name, city, state. Allow small variations (e.g., "Ave" vs "Avenue", nearby numbers)."""
 
 
-SELECT_CONTACT_PROMPT = """Select the best property manager contact from collected data.
+SELECT_CONTACT_PROMPT = """Select the BEST DECISION-MAKER contact from collected data for this property.
 
 TARGET PROPERTY: {address}
 
 COLLECTED DATA FROM MULTIPLE SOURCES:
 {collected_data}
 
-SELECTION CRITERIA (in order of preference):
-1. Direct leasing office with both phone AND email
-2. Property manager with phone OR email
-3. Management company main contact
-4. Any phone number associated with the property
-5. Any email associated with the property
+VALIDATION SUMMARY:
+{validation_summary}
+
+SELECTION CRITERIA - PRIORITIZE DECISION MAKERS (in order):
+1. Regional Manager, Director, VP with verified contact info
+2. Property Manager, Community Manager with phone AND email
+3. Leasing Manager, Office Manager with contact info  
+4. Named contact found on multiple sources (cross-validated)
+5. Leasing office with both phone AND email
+6. Management company main contact with phone
+7. Any verified phone/email associated with the property
+
+DECISION-MAKER TITLES TO LOOK FOR:
+- Vice President, Director, Regional Manager (highest priority)
+- Property Manager, Community Manager, Asset Manager
+- Leasing Manager, Leasing Director
+- General Manager, Operations Manager
+
+CONFIDENCE SCORING:
+- 0.9-1.0: Named person found on 2+ sources with title confirming decision-maker role
+- 0.7-0.9: Named person found on 1 source with decision-maker title
+- 0.5-0.7: Generic leasing office contact or unnamed management contact
+- 0.3-0.5: Phone/email only, no verification
+- 0.0-0.3: Uncertain or unverified contact
 
 Return ONLY valid JSON:
 {{
   "selected_contact": {{
-    "name": "Name or leave empty",
-    "title": "Title or leave empty", 
+    "name": "Full Name",
+    "title": "Their title/role", 
     "email": "Best email found",
     "phone": "Best phone found",
     "company": "Management company name"
   }},
   "confidence": 0.0-1.0,
-  "verification": "Why this is the best contact for the property"
+  "verification": "Why this is the best DECISION-MAKER contact",
+  "sources_validated": ["list", "of", "sources", "where", "contact", "was", "found"]
 }}
 
-IMPORTANT: Return a contact if you found ANY phone or email. Something is better than nothing!"""
+IMPORTANT: Prefer a decision-maker with verified info over generic contact. Cross-reference data!"""
+
+
+VALIDATE_LINKEDIN_PROMPT = """Verify if this LinkedIn search result matches a decision-maker for the target property.
+
+TARGET PROPERTY: {address}
+MANAGEMENT COMPANY: {company}
+EXISTING CONTACT INFO:
+- Name: {contact_name}
+- Title: {contact_title}
+- Phone: {contact_phone}
+- Email: {contact_email}
+
+LINKEDIN SEARCH RESULTS:
+{linkedin_data}
+
+Verify if any LinkedIn profile matches the contact and is a decision-maker for this property.
+
+Return ONLY valid JSON:
+{{
+  "found_match": true/false,
+  "matched_profile": {{
+    "name": "Full Name from LinkedIn",
+    "title": "Title from LinkedIn",
+    "company": "Company from LinkedIn"
+  }},
+  "is_decision_maker": true/false,
+  "decision_maker_level": "high/medium/low",
+  "confidence": 0.0-1.0,
+  "reasoning": "Why this is/isn't a decision maker for this property"
+}}
+
+Decision-maker levels:
+- HIGH: VP, Director, Regional Manager, Owner
+- MEDIUM: Property Manager, Community Manager, General Manager
+- LOW: Leasing Agent, Office Staff"""
+
+
+CROSS_VALIDATE_PROMPT = """Cross-validate contact information found across multiple sources.
+
+TARGET PROPERTY: {address}
+
+CONTACTS FOUND FROM DIFFERENT SOURCES:
+{all_contacts}
+
+Analyze which contacts appear across multiple sources and are most likely to be the actual decision-maker.
+
+Return ONLY valid JSON:
+{{
+  "validated_contacts": [
+    {{
+      "name": "Name",
+      "title": "Title",
+      "phone": "Phone",
+      "email": "Email",
+      "company": "Company",
+      "sources_found": ["Source1", "Source2"],
+      "is_decision_maker": true/false,
+      "validation_confidence": 0.0-1.0,
+      "reasoning": "Why this contact is validated"
+    }}
+  ],
+  "best_decision_maker": {{
+    "name": "Name of best decision maker",
+    "title": "Their title",
+    "phone": "Phone",
+    "email": "Email", 
+    "company": "Company",
+    "confidence": 0.0-1.0,
+    "reasoning": "Why this is the best decision maker to contact"
+  }}
+}}
+
+VALIDATION RULES:
+1. Same phone/email on 2+ sources = HIGH confidence
+2. Same name on 2+ sources = MEDIUM confidence  
+3. Decision-maker title increases confidence
+4. Prefer contacts with both phone AND email"""
 
 
 # ============================================================
@@ -491,19 +606,17 @@ class LLMEnrichmentService:
                         step.status = "failed"
                         step.output = "No results found"
                 
-                # Check if we have a verified contact
-                verified_contact = any(
-                    d.get("is_correct_property") and (
+                # Track progress but DON'T stop early - continue gathering data for cross-validation
+                verified_count = sum(
+                    1 for d in collected_data 
+                    if d.get("is_correct_property") and (
                         any(c.get("email") or c.get("phone") for c in d.get("contacts_found", [])) or
                         d.get("management_phone")
                     )
-                    for d in collected_data
                 )
                 
-                # Only early exit if we have a VERIFIED contact with phone/email
-                if verified_contact:
-                    logger.info(f"  [LLM] Found verified contact, stopping search")
-                    break
+                if verified_count > 0:
+                    logger.info(f"  [LLM] Found {verified_count} verified sources, continuing to gather more for validation...")
             
             # ============ Step 2b: Fallback Strategies if no verified results ============
             verified_data = [d for d in collected_data if d.get("is_correct_property", False)]
@@ -588,7 +701,7 @@ class LLMEnrichmentService:
                             fallback_type_step.status = "failed"
                             fallback_type_step.output = "No results"
             
-            # ============ Step 3: Filter and Select Best Contact ============
+            # ============ Step 3: Filter and Cross-Validate Contacts ============
             # Filter out unverified results
             verified_data = [
                 d for d in collected_data 
@@ -622,10 +735,137 @@ class LLMEnrichmentService:
             )
             detailed_steps.append(filter_step)
             
-            # Select best contact via LLM (only from verified sources)
+            # ============ Step 3b: Cross-Validate Contacts Across Sources ============
+            # Extract all contacts from verified data for cross-validation
+            all_contacts_for_validation = []
+            for data in verified_data:
+                source_name = data.get("source", "Unknown")
+                
+                # Add individual contacts
+                for contact in data.get("contacts_found", []):
+                    all_contacts_for_validation.append({
+                        **contact,
+                        "source": source_name,
+                        "source_url": data.get("source_url")
+                    })
+                
+                # Add management contact
+                if data.get("management_phone") or data.get("management_email"):
+                    all_contacts_for_validation.append({
+                        "name": None,
+                        "title": "Management Contact",
+                        "phone": data.get("management_phone"),
+                        "email": data.get("management_email"),
+                        "company": data.get("management_company"),
+                        "source": source_name,
+                        "source_url": data.get("source_url")
+                    })
+            
+            # Cross-validate if we have contacts from multiple sources
+            validation_summary = "Single source verification"
+            sources_validated = []
+            
+            if len(verified_data) > 1 and all_contacts_for_validation:
+                cross_validate_step = EnrichmentStep(
+                    action="cross_validate",
+                    description="Cross-validating contacts across sources",
+                    status="success",
+                    source="Multi-source validation"
+                )
+                detailed_steps.append(cross_validate_step)
+                
+                try:
+                    cross_val_response, cross_val_tokens = await self._call_llm(
+                        CROSS_VALIDATE_PROMPT.format(
+                            address=address,
+                            all_contacts=json.dumps(all_contacts_for_validation, indent=2)[:4000]
+                        )
+                    )
+                    tokens_used += cross_val_tokens
+                    
+                    validated_contacts = cross_val_response.get("validated_contacts", [])
+                    best_dm = cross_val_response.get("best_decision_maker", {})
+                    
+                    if validated_contacts:
+                        # Count how many contacts appear on multiple sources
+                        multi_source = [c for c in validated_contacts if len(c.get("sources_found", [])) > 1]
+                        cross_validate_step.output = f"{len(multi_source)} contacts verified on multiple sources"
+                        cross_validate_step.reasoning = f"Found {len(validated_contacts)} unique contacts across {len(verified_data)} sources"
+                        
+                        if multi_source:
+                            validation_summary = f"{len(multi_source)} contacts found on multiple sources"
+                            sources_validated = list(set(
+                                src for c in multi_source for src in c.get("sources_found", [])
+                            ))
+                        
+                        # If we found a best decision maker through cross-validation, prioritize it
+                        if best_dm and best_dm.get("confidence", 0) > 0.7:
+                            cross_validate_step.output += f" | Best: {best_dm.get('name', 'Contact')} ({best_dm.get('title', 'Unknown')})"
+                            cross_validate_step.confidence = best_dm.get("confidence")
+                    else:
+                        cross_validate_step.output = "No cross-validated contacts"
+                        cross_validate_step.status = "partial"
+                        
+                except Exception as e:
+                    logger.warning(f"  [LLM] Cross-validation error: {e}")
+                    cross_validate_step.status = "failed"
+                    cross_validate_step.output = "Cross-validation skipped"
+            
+            # ============ Step 3c: LinkedIn Decision-Maker Validation ============
+            # If we have a management company, try to find decision makers on LinkedIn
+            management_company = None
+            for data in verified_data:
+                if data.get("management_company"):
+                    management_company = data["management_company"]
+                    break
+            
+            if management_company:
+                linkedin_val_step = EnrichmentStep(
+                    action="linkedin_validation",
+                    description=f"Validating decision-makers for {management_company[:30]}...",
+                    status="success",
+                    source="LinkedIn"
+                )
+                detailed_steps.append(linkedin_val_step)
+                
+                # Get any contact name we've found so far
+                first_contact = next((c for c in all_contacts_for_validation if c.get("name")), {})
+                
+                linkedin_result = await self._search_linkedin_company(
+                    f"{management_company} property manager director",
+                    address,
+                    property_type
+                )
+                
+                if linkedin_result:
+                    linkedin_val_step.url = linkedin_result.get("source_url")
+                    tokens_used += linkedin_result.get("tokens_used", 0)
+                    
+                    # Try to validate if found person is decision maker
+                    if linkedin_result.get("contacts_found"):
+                        dm_contacts = [c for c in linkedin_result["contacts_found"] 
+                                      if self._is_decision_maker_title(c.get("title", ""))]
+                        if dm_contacts:
+                            linkedin_val_step.output = f"Found {len(dm_contacts)} decision-maker(s)"
+                            linkedin_val_step.reasoning = f"Titles: {', '.join(c.get('title', '') for c in dm_contacts[:3])}"
+                            validation_summary += f" + {len(dm_contacts)} LinkedIn decision-makers"
+                            # Add to verified data for final selection
+                            linkedin_result["is_correct_property"] = True
+                            verified_data.append(linkedin_result)
+                        else:
+                            linkedin_val_step.output = "Found contacts but no clear decision-makers"
+                            linkedin_val_step.status = "partial"
+                    else:
+                        linkedin_val_step.output = "No direct contacts found"
+                        linkedin_val_step.status = "partial"
+                else:
+                    linkedin_val_step.status = "failed"
+                    linkedin_val_step.output = "LinkedIn search failed"
+            
+            # ============ Step 4: Select Best Decision-Maker Contact ============
             select_step = EnrichmentStep(
                 action="select_contact",
-                description="Selecting best contact",
+                description="Selecting best decision-maker contact",
                 status="success"
             )
             detailed_steps.append(select_step)
@@ -633,7 +873,8 @@ class LLMEnrichmentService:
             final_response, select_tokens = await self._call_llm(
                 SELECT_CONTACT_PROMPT.format(
                     address=address,
-                    collected_data=json.dumps(verified_data, indent=2)[:4000]
+                    collected_data=json.dumps(verified_data, indent=2)[:4000],
+                    validation_summary=validation_summary
                 )
             )
             tokens_used += select_tokens
@@ -641,9 +882,9 @@ class LLMEnrichmentService:
             selected = final_response.get("selected_contact", {})
             confidence = final_response.get("confidence", 0.0)
             verification = final_response.get("verification", "")
+            sources_from_selection = final_response.get("sources_validated", [])
             
-            # Get management info first (from verified sources)
-            management_company = None
+            # Get management info from verified sources (management_company may already be set above)
             management_website = None
             management_phone = None
             management_email = None
@@ -690,10 +931,28 @@ class LLMEnrichmentService:
                 select_step.confidence = confidence
             
             if contact:
+                # Build output with validation info
+                output_text = f"{contact.name or 'Contact'}"
+                if contact.title:
+                    dm_level = self._get_decision_maker_level(contact.title)
+                    if dm_level != "unknown":
+                        output_text += f" ({contact.title} - {dm_level} decision-maker)"
+                    else:
+                        output_text += f" ({contact.title})"
+                output_text += f" at {contact.company or 'property'}"
+                
+                # Include validation sources if available
+                reasoning_text = verification
+                if sources_from_selection:
+                    reasoning_text += f" | Validated on: {', '.join(sources_from_selection[:3])}"
+                elif len(verified_data) > 1:
+                    reasoning_text += f" | Cross-referenced across {len(verified_data)} sources"
+                
                 detailed_steps.append(EnrichmentStep(
                     action="complete",
-                    description="✓ Contact found",
-                    output=f"{contact.name or 'Contact'} at {contact.company or 'property'}",
+                    description="Contact found (validated)",
+                    output=output_text,
+                    reasoning=reasoning_text,
                     status="success",
                     confidence=confidence,
                     url=management_website,
@@ -735,6 +994,61 @@ class LLMEnrichmentService:
                 tokens_used=tokens_used,
                 error_message=str(e),
             )
+    
+    # ============================================================
+    # HELPER METHODS
+    # ============================================================
+    
+    def _is_decision_maker_title(self, title: str) -> bool:
+        """Check if a title indicates a decision-maker role."""
+        if not title:
+            return False
+        
+        title_lower = title.lower()
+        
+        # High-level decision makers
+        high_level = [
+            "vice president", "vp", "director", "regional manager",
+            "owner", "principal", "partner", "ceo", "coo", "cfo",
+            "president", "executive", "chief"
+        ]
+        
+        # Property-level decision makers
+        property_level = [
+            "property manager", "community manager", "asset manager",
+            "general manager", "operations manager", "site manager",
+            "leasing manager", "leasing director", "apartment manager",
+            "portfolio manager", "area manager"
+        ]
+        
+        all_dm_titles = high_level + property_level
+        
+        for dm_title in all_dm_titles:
+            if dm_title in title_lower:
+                return True
+        
+        return False
+    
+    def _get_decision_maker_level(self, title: str) -> str:
+        """Get the decision-maker level for prioritization."""
+        if not title:
+            return "unknown"
+        
+        title_lower = title.lower()
+        
+        # Highest priority
+        if any(t in title_lower for t in ["vice president", "vp", "director", "regional", "owner", "principal", "president", "executive", "chief"]):
+            return "high"
+        
+        # Medium priority
+        if any(t in title_lower for t in ["property manager", "community manager", "asset manager", "general manager", "operations manager", "portfolio manager"]):
+            return "medium"
+        
+        # Lower priority (but still decision-maker)
+        if any(t in title_lower for t in ["leasing manager", "site manager", "area manager"]):
+            return "low"
+        
+        return "unknown"
     
     # ============================================================
     # SEARCH METHODS
@@ -942,13 +1256,8 @@ class LLMEnrichmentService:
         address: str,
         property_type: str,
     ) -> Optional[Dict[str, Any]]:
-        """Search for company info via Google (LinkedIn results)."""
+        """Search for company info and decision-makers via Google/company websites."""
         try:
-            # We can't directly access LinkedIn, but we can search Google for LinkedIn company pages
-            # and extract basic info from search results
-            search_query = f"site:linkedin.com/company {query} property management"
-            
-            # Use Google Places API with a different query to find company info
             if not settings.GOOGLE_PLACES_KEY:
                 return None
             
@@ -1008,6 +1317,42 @@ class LLMEnrichmentService:
                             if web_result:
                                 data["contacts_found"] = web_result.get("contacts_found", [])
                                 data["tokens_used"] += web_result.get("tokens_used", 0)
+                            
+                            # Also try to find team/about/leadership pages
+                            team_pages = [
+                                f"{website.rstrip('/')}/team",
+                                f"{website.rstrip('/')}/about",
+                                f"{website.rstrip('/')}/leadership",
+                                f"{website.rstrip('/')}/about-us",
+                                f"{website.rstrip('/')}/our-team",
+                                f"{website.rstrip('/')}/management",
+                            ]
+                            
+                            for team_url in team_pages[:3]:  # Try first 3
+                                try:
+                                    team_result = await self._visit_and_analyze(team_url, address, property_type, depth=1)
+                                    if team_result and team_result.get("contacts_found"):
+                                        # Look for decision makers in team page
+                                        dm_contacts = [
+                                            c for c in team_result["contacts_found"]
+                                            if self._is_decision_maker_title(c.get("title", ""))
+                                        ]
+                                        if dm_contacts:
+                                            logger.info(f"  [LLM] Found {len(dm_contacts)} decision-makers on {team_url}")
+                                            data["contacts_found"].extend(dm_contacts)
+                                            data["tokens_used"] += team_result.get("tokens_used", 0)
+                                            break  # Found decision makers, stop looking
+                                except Exception:
+                                    continue
+                        
+                        # Filter to prioritize decision-makers
+                        if data["contacts_found"]:
+                            # Sort by decision-maker level
+                            def dm_priority(contact):
+                                level = self._get_decision_maker_level(contact.get("title", ""))
+                                return {"high": 0, "medium": 1, "low": 2, "unknown": 3}.get(level, 3)
+                            
+                            data["contacts_found"] = sorted(data["contacts_found"], key=dm_priority)
                         
                         return data
             
@@ -1062,11 +1407,26 @@ class LLMEnrichmentService:
                 "tokens_used": tokens,
             }
             
-            # Follow contact links to find more info
+            # Follow contact links to find more info - especially decision-makers
             if links and depth < 2:  # Allow 2 levels deep
-                # No contacts yet - try multiple links
-                links_to_try = 3 if not contacts else 1
-                for link in links[:links_to_try]:
+                # Prioritize team/about/leadership pages for decision-makers
+                priority_pages = ["team", "about", "leadership", "staff", "management", "contact"]
+                
+                def link_priority(link):
+                    href = link.get("href", "").lower()
+                    reason = link.get("reason", "").lower()
+                    for i, keyword in enumerate(priority_pages):
+                        if keyword in href or keyword in reason:
+                            return i
+                    return len(priority_pages)
+                
+                sorted_links = sorted(links, key=link_priority)
+                
+                # Try more links to find decision-makers
+                links_to_try = 4 if not contacts else 2
+                found_decision_maker = False
+                
+                for link in sorted_links[:links_to_try]:
                     href = link.get("href")
                     if href:
                         if href.startswith("/"):
@@ -1076,6 +1436,10 @@ class LLMEnrichmentService:
                             # Merge contacts
                             if sub.get("contacts_found"):
                                 result["contacts_found"].extend(sub["contacts_found"])
+                                # Check if we found any decision-makers
+                                for c in sub["contacts_found"]:
+                                    if c.get("is_decision_maker") or self._is_decision_maker_title(c.get("title", "")):
+                                        found_decision_maker = True
                             # Update management info if found
                             if sub.get("management_phone") and not result.get("management_phone"):
                                 result["management_phone"] = sub["management_phone"]
@@ -1083,8 +1447,8 @@ class LLMEnrichmentService:
                                 result["management_company"] = sub["management_company"]
                             result["tokens_used"] += sub.get("tokens_used", 0)
                             
-                            # Stop if we have good contact info
-                            if result.get("contacts_found") or result.get("management_phone"):
+                            # Only stop early if we found a decision-maker with contact info
+                            if found_decision_maker and (result.get("contacts_found") or result.get("management_phone")):
                                 break
             
             return result
