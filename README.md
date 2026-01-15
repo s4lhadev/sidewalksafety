@@ -1,4 +1,4 @@
-# Worksight SaaS
+# Worksight SaaS -
 
 Lead scraping and deal evaluation platform for landscaping companies. Automatically verifies businesses have parking lots before saving as deals.
 
