@@ -279,17 +279,54 @@ export interface AnalyzePropertyRequest {
 export interface AnalyzePropertyResponse {
   success: boolean
   property_id: string
-  lead_score: number
-  lead_quality: string
-  confidence: number
-  reasoning: string
-  observations?: {
-    paved_area_pct?: number
-    building_pct?: number
-    landscaping_pct?: number
-    condition?: string
-    visible_issues?: string[]
+  steps_completed: string[]
+  lead_score?: number | null
+  lead_quality?: string | null
+  has_contact?: boolean
+  
+  // Imagery result
+  imagery?: {
+    success: boolean
+    already_captured?: boolean
+    zoom_level?: number
+    area_m2?: number
+    error?: string
   } | null
+  
+  // VLM analysis result
+  vlm_analysis?: {
+    success: boolean
+    lead_score?: number
+    lead_quality?: string
+    confidence?: number
+    reasoning?: string
+    observations?: {
+      paved_area_pct?: number
+      building_pct?: number
+      landscaping_pct?: number
+      condition?: string
+      visible_issues?: string[]
+    } | null
+    error?: string
+  } | null
+  
+  // Enrichment result
+  enrichment?: {
+    success: boolean
+    contact?: {
+      name?: string
+      email?: string
+      phone?: string
+      title?: string
+      company?: string
+    } | null
+    confidence?: number
+    steps?: string[]
+    detailed_steps?: EnrichmentStep[]
+    error?: string
+  } | null
+  
+  // Usage tracking
   usage?: {
     tokens?: number
     cost?: number

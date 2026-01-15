@@ -8,7 +8,7 @@ import { PropertyPreviewCard } from '@/components/map/property-preview-card'
 import { useDiscoveryStream } from '@/lib/hooks/use-discovery-stream'
 
 type ClickMode = 'property' | 'discovery'
-import { DealMapResponse, DiscoveryMode, PropertyCategory } from '@/types'
+import { DealMapResponse, PropertyCategory } from '@/types'
 import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { 
@@ -117,52 +117,24 @@ export default function DashboardPage() {
     type: 'zip' | 'county'
     value: string
     state?: string
-    businessTypeIds?: string[]
     maxResults?: number
     scoringPrompt?: string
-    mode?: DiscoveryMode
-    city?: string
-    jobTitles?: string[]
-    industries?: string[]
     propertyCategories?: PropertyCategory[]
     minAcres?: number
     maxAcres?: number
   }) => {
-    // Use streaming for regrid_first mode
-    if (params.mode === 'regrid_first') {
-      discoveryStream.startStream({
-        area_type: params.type,
-        value: params.value,
-        state: params.state,
-        max_results: params.maxResults || (params.type === 'zip' ? 10 : 30),
-        business_type_ids: params.businessTypeIds,
-        scoring_prompt: params.scoringPrompt,
-        mode: params.mode,
-        city: params.city,
-        job_titles: params.jobTitles,
-        industries: params.industries,
-        property_categories: params.propertyCategories,
-        min_acres: params.minAcres,
-        max_acres: params.maxAcres,
-      })
-    } else {
-      // Use regular mutation for other modes
-      scrapeDeals.mutate({
-        area_type: params.type, 
-        value: params.value,
-        state: params.state,
-        max_results: params.maxResults || (params.type === 'zip' ? 10 : 30),
-        business_type_ids: params.businessTypeIds,
-        scoring_prompt: params.scoringPrompt,
-        mode: params.mode,
-        city: params.city,
-        job_titles: params.jobTitles,
-        industries: params.industries,
-        property_categories: params.propertyCategories,
-        min_acres: params.minAcres,
-        max_acres: params.maxAcres,
-      }, { onSuccess: () => setClickedLocation(null) })
-    }
+    // Always use streaming with Regrid-first discovery
+    discoveryStream.startStream({
+      area_type: params.type,
+      value: params.value,
+      state: params.state,
+      max_results: params.maxResults || (params.type === 'zip' ? 10 : 30),
+      scoring_prompt: params.scoringPrompt,
+      mode: 'regrid_first',
+      property_categories: params.propertyCategories,
+      min_acres: params.minAcres,
+      max_acres: params.maxAcres,
+    })
   }
 
   const counts = {

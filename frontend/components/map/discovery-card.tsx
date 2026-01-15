@@ -11,23 +11,18 @@ import {
   CheckCircle2, 
   Hash, 
   Map as MapIcon,
-  Trophy,
-  Star,
   ChevronDown,
   ChevronUp,
-  Building2,
   Search,
   Sparkles,
   RotateCcw,
-  FileText,
-  Users,
-  Briefcase,
   Ruler,
   Radio,
   Phone,
   Mail,
+  Star,
 } from 'lucide-react'
-import { DiscoveryMode, PropertyCategory } from '@/types'
+import { PropertyCategory } from '@/types'
 import { DiscoveryProgress } from '@/lib/hooks/use-discovery-stream'
 
 interface LocationInfo {
@@ -35,20 +30,6 @@ interface LocationInfo {
   city?: string
   county?: string
   state?: string
-}
-
-interface BusinessType {
-  id: string
-  label: string
-  queries: string[]
-}
-
-interface Tier {
-  id: string
-  label: string
-  icon: string
-  description: string
-  types: BusinessType[]
 }
 
 interface PropCategoryOption {
@@ -64,13 +45,8 @@ interface DiscoveryCardProps {
     type: 'zip' | 'county'
     value: string
     state?: string
-    businessTypeIds?: string[]
     maxResults?: number
     scoringPrompt?: string
-    mode?: DiscoveryMode
-    city?: string
-    jobTitles?: string[]
-    industries?: string[]
     propertyCategories?: PropertyCategory[]
     minAcres?: number
     maxAcres?: number
@@ -83,48 +59,6 @@ interface DiscoveryCardProps {
   currentMessage?: DiscoveryProgress | null
 }
 
-// Business type options (matches backend)
-const BUSINESS_TIERS: Tier[] = [
-  {
-    id: 'premium',
-    label: 'Premium',
-    icon: 'trophy',
-    description: 'Residential with large parking & roads',
-    types: [
-      { id: 'apartments', label: 'Apartment Complexes', queries: [] },
-      { id: 'condos', label: 'Condo Buildings', queries: [] },
-      { id: 'townhomes', label: 'Townhome Communities', queries: [] },
-      { id: 'mobile_home', label: 'Mobile Home Parks', queries: [] },
-    ],
-  },
-  {
-    id: 'high',
-    label: 'High Priority',
-    icon: 'star',
-    description: 'Commercial with large parking',
-    types: [
-      { id: 'shopping', label: 'Shopping Centers / Malls', queries: [] },
-      { id: 'hotels', label: 'Hotels / Motels', queries: [] },
-      { id: 'offices', label: 'Office Parks / Complexes', queries: [] },
-      { id: 'warehouses', label: 'Warehouses / Industrial', queries: [] },
-    ],
-  },
-  {
-    id: 'standard',
-    label: 'Standard',
-    icon: 'map-pin',
-    description: 'Other businesses',
-    types: [
-      { id: 'churches', label: 'Churches', queries: [] },
-      { id: 'schools', label: 'Schools', queries: [] },
-      { id: 'hospitals', label: 'Hospitals / Medical', queries: [] },
-      { id: 'gyms', label: 'Gyms / Fitness', queries: [] },
-      { id: 'grocery', label: 'Grocery Stores', queries: [] },
-      { id: 'car_dealers', label: 'Car Dealerships', queries: [] },
-    ],
-  },
-]
-
 // Default scoring prompt
 const DEFAULT_SCORING_PROMPT = `Score as a lead for pavement maintenance:
 
@@ -132,16 +66,7 @@ HIGH (80-100): Large parking areas with visible damage, cracks, or wear
 MEDIUM (40-79): Moderate paved areas, some wear visible
 LOW (0-39): Small paved areas or well-maintained surfaces`
 
-// Default selected types (premium tier)
-const DEFAULT_SELECTED = ['apartments', 'condos', 'townhomes', 'mobile_home']
-
-// Default job titles for contact-first mode
-const DEFAULT_JOB_TITLES = ['Owner', 'Principal', 'Asset Manager', 'Managing Partner', 'President']
-
-// Default industries for contact-first mode
-const DEFAULT_INDUSTRIES = ['real estate', 'property management', 'commercial real estate']
-
-// Property categories for Regrid-first mode (maps to LBCS codes)
+// Property categories for Regrid discovery (maps to LBCS codes)
 const PROPERTY_CATEGORIES: PropCategoryOption[] = [
   { id: 'multi_family', label: 'Multi-Family', description: 'Apartments, condos, townhomes' },
   { id: 'retail', label: 'Retail', description: 'Shopping centers, stores' },
@@ -169,20 +94,15 @@ export function DiscoveryCard({
   const [pendingAction, setPendingAction] = useState<'zip' | 'county' | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showScoring, setShowScoring] = useState(false)
-  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set(DEFAULT_SELECTED))
-  const [expandedTiers, setExpandedTiers] = useState<Set<string>>(new Set(['premium']))
   const [maxResults, setMaxResults] = useState<number>(10)
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
   const [customPrompt, setCustomPrompt] = useState<string>('')
   const [useCustom, setUseCustom] = useState(false)
   
-  // Discovery mode state
-  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('regrid_first')  // Default to Regrid-first
-  const [selectedJobTitles, setSelectedJobTitles] = useState<Set<string>>(new Set(DEFAULT_JOB_TITLES))
-  const [selectedIndustries, setSelectedIndustries] = useState<Set<string>>(new Set(DEFAULT_INDUSTRIES))
+  // Property categories state
   const [selectedCategories, setSelectedCategories] = useState<Set<PropertyCategory>>(new Set(DEFAULT_CATEGORIES))
   
-  // Size filter state (Regrid-first mode)
+  // Size filter state
   const [minAcres, setMinAcres] = useState<string>('')
   const [maxAcres, setMaxAcres] = useState<string>('')
 
@@ -261,8 +181,6 @@ export function DiscoveryCard({
   const handleConfirm = () => {
     if (!pendingAction || !locationInfo) return
     
-    const typeIds = Array.from(selectedTypes)
-    
     // Get effective prompt: custom > selected saved prompt > undefined (uses default)
     let effectivePrompt: string | undefined = undefined
     if (useCustom && customPrompt.trim()) {
@@ -274,40 +192,17 @@ export function DiscoveryCard({
       }
     }
     
-    // Build params object based on discovery mode
-    const baseParams = {
+    // Build params - always use Regrid-first mode
+    onDiscover({
       type: pendingAction,
       value: pendingAction === 'zip' ? locationInfo.zip! : locationInfo.county!,
-      // State is needed for county mode, contact_first, and regrid_first
-      state: (pendingAction === 'county' || discoveryMode !== 'business_first') ? locationInfo.state : undefined,
+      state: locationInfo.state,
       maxResults,
       scoringPrompt: effectivePrompt,
-      mode: discoveryMode,
-    }
-    
-    if (discoveryMode === 'contact_first') {
-      // Contact-first mode: pass city, job titles, industries
-      onDiscover({
-        ...baseParams,
-        city: locationInfo.city,
-        jobTitles: Array.from(selectedJobTitles),
-        industries: Array.from(selectedIndustries),
-      })
-    } else if (discoveryMode === 'regrid_first') {
-      // Regrid-first mode: pass property categories and size filter
-      onDiscover({
-        ...baseParams,
-        propertyCategories: Array.from(selectedCategories),
-        minAcres: minAcres ? parseFloat(minAcres) : undefined,
-        maxAcres: maxAcres ? parseFloat(maxAcres) : undefined,
-      })
-    } else {
-      // Business-first mode: pass business type IDs
-      onDiscover({
-        ...baseParams,
-        businessTypeIds: typeIds.length > 0 ? typeIds : undefined,
-      })
-    }
+      propertyCategories: Array.from(selectedCategories),
+      minAcres: minAcres ? parseFloat(minAcres) : undefined,
+      maxAcres: maxAcres ? parseFloat(maxAcres) : undefined,
+    })
   }
 
   const handleCancel = () => {
@@ -315,56 +210,6 @@ export function DiscoveryCard({
     setShowAdvanced(false)
     setShowScoring(false)
   }
-
-  const toggleType = (typeId: string) => {
-    const newSelected = new Set(selectedTypes)
-    if (newSelected.has(typeId)) {
-      newSelected.delete(typeId)
-    } else {
-      newSelected.add(typeId)
-    }
-    setSelectedTypes(newSelected)
-  }
-
-  const toggleTier = (tierId: string) => {
-    const tier = BUSINESS_TIERS.find(t => t.id === tierId)
-    if (!tier) return
-    
-    const tierTypeIds = tier.types.map(t => t.id)
-    const allSelected = tierTypeIds.every(id => selectedTypes.has(id))
-    
-    const newSelected = new Set(selectedTypes)
-    if (allSelected) {
-      tierTypeIds.forEach(id => newSelected.delete(id))
-    } else {
-      tierTypeIds.forEach(id => newSelected.add(id))
-    }
-    setSelectedTypes(newSelected)
-  }
-
-  const toggleTierExpand = (tierId: string) => {
-    const newExpanded = new Set(expandedTiers)
-    if (newExpanded.has(tierId)) {
-      newExpanded.delete(tierId)
-    } else {
-      newExpanded.add(tierId)
-    }
-    setExpandedTiers(newExpanded)
-  }
-
-  const getTierIcon = (iconName: string, className: string) => {
-    switch (iconName) {
-      case 'trophy': return <Trophy className={className} />
-      case 'star': return <Star className={className} />
-      default: return <MapPin className={className} />
-    }
-  }
-
-  const getTierSelectedCount = (tier: Tier) => {
-    return tier.types.filter(t => selectedTypes.has(t.id)).length
-  }
-
-  const totalSelected = selectedTypes.size
 
   return (
     <div className="bg-stone-50 rounded-lg shadow-lg border border-stone-200 overflow-hidden w-80 text-sm">
@@ -555,80 +400,21 @@ export function DiscoveryCard({
             {/* Confirmation State */}
             {pendingAction ? (
               <div className="space-y-3">
-                {/* Discovery Mode Selector */}
-                <div className="grid grid-cols-3 gap-1">
-                  <button
-                    onClick={() => setDiscoveryMode('regrid_first')}
-                    className={cn(
-                      'flex flex-col items-center justify-center gap-0.5 px-1.5 py-2 rounded-lg text-[10px] font-medium transition-all',
-                      discoveryMode === 'regrid_first'
-                        ? 'bg-amber-600 text-white shadow-sm'
-                        : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-                    )}
-                  >
-                    <MapIcon className="h-3.5 w-3.5" />
-                    <span>Regrid</span>
-                  </button>
-                  <button
-                    onClick={() => setDiscoveryMode('business_first')}
-                    className={cn(
-                      'flex flex-col items-center justify-center gap-0.5 px-1.5 py-2 rounded-lg text-[10px] font-medium transition-all',
-                      discoveryMode === 'business_first'
-                        ? 'bg-stone-800 text-white shadow-sm'
-                        : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-                    )}
-                  >
-                    <Building2 className="h-3.5 w-3.5" />
-                    <span>Places</span>
-                  </button>
-                  <button
-                    onClick={() => setDiscoveryMode('contact_first')}
-                    className={cn(
-                      'flex flex-col items-center justify-center gap-0.5 px-1.5 py-2 rounded-lg text-[10px] font-medium transition-all',
-                      discoveryMode === 'contact_first'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-                    )}
-                  >
-                    <Users className="h-3.5 w-3.5" />
-                    <span>Apollo</span>
-                  </button>
+                {/* Selected Area */}
+                <div className="flex items-center gap-2 px-2 py-1.5 bg-emerald-50 border border-emerald-200 rounded">
+                  <MapIcon className="h-3.5 w-3.5 text-emerald-600" />
+                  <span className="text-xs font-medium text-stone-700">
+                    {pendingAction === 'zip' ? `ZIP ${locationInfo.zip}` : `${locationInfo.county} County`}
+                  </span>
+                  <span className="text-[10px] text-emerald-600 ml-auto">
+                    {selectedCategories.size} categories
+                  </span>
                 </div>
                 
                 {/* Mode Description */}
                 <p className="text-[10px] text-stone-400 leading-tight px-0.5">
-                  {discoveryMode === 'regrid_first' 
-                    ? 'Query Regrid directly by property type (LBCS codes) - comprehensive coverage'
-                    : discoveryMode === 'business_first' 
-                    ? 'Find properties via Google Places, then analyze with satellite imagery'
-                    : 'Find decision-maker contacts via Apollo, then discover their properties'
-                  }
+                  Discover properties via Regrid parcel data, analyze with satellite imagery, and find decision-maker contacts.
                 </p>
-
-                {/* Selected Area */}
-                <div className="flex items-center gap-2 px-2 py-1.5 bg-stone-100 rounded">
-                  {discoveryMode === 'contact_first' ? (
-                    <Users className="h-3.5 w-3.5 text-emerald-600" />
-                  ) : discoveryMode === 'regrid_first' ? (
-                    <MapIcon className="h-3.5 w-3.5 text-amber-600" />
-                  ) : (
-                    <Building2 className="h-3.5 w-3.5 text-stone-500" />
-                  )}
-                  <span className="text-xs font-medium text-stone-700">
-                    {discoveryMode === 'contact_first' && locationInfo.city
-                      ? `${locationInfo.city}, ${locationInfo.state}`
-                      : pendingAction === 'zip' ? `ZIP ${locationInfo.zip}` : `${locationInfo.county} County`
-                    }
-                  </span>
-                  <span className="text-[10px] text-stone-400 ml-auto">
-                    {discoveryMode === 'contact_first' 
-                      ? `${selectedJobTitles.size} titles`
-                      : discoveryMode === 'regrid_first'
-                      ? `${selectedCategories.size} categories`
-                      : `${totalSelected} types`
-                    }
-                  </span>
-                </div>
 
                 {/* Max Results */}
                 <div className="flex items-center justify-between">
@@ -643,236 +429,90 @@ export function DiscoveryCard({
                   />
                 </div>
 
-                {/* Property Categories (Regrid-First Mode) */}
-                {discoveryMode === 'regrid_first' && (
-                  <div>
-                    <button
-                      onClick={() => setShowAdvanced(!showAdvanced)}
-                      className="w-full flex items-center justify-between px-2 py-1.5 bg-amber-50 border border-amber-200 rounded hover:bg-amber-100 transition-colors"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <MapIcon className="h-3.5 w-3.5 text-amber-600" />
-                        <span className="text-xs font-medium text-amber-700">Property Types</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-amber-600">{selectedCategories.size} selected</span>
-                        {showAdvanced ? (
-                          <ChevronUp className="h-3.5 w-3.5 text-amber-500" />
-                        ) : (
-                          <ChevronDown className="h-3.5 w-3.5 text-amber-500" />
-                        )}
-                      </div>
-                    </button>
-                    
-                    {showAdvanced && (
-                      <div className="mt-2 p-2 border border-amber-200 rounded bg-white space-y-1">
-                        {PROPERTY_CATEGORIES.map((cat) => (
-                          <label 
-                            key={cat.id}
-                            className="flex items-start gap-2 cursor-pointer hover:bg-amber-50 px-1.5 py-1.5 rounded"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedCategories.has(cat.id)}
-                              onChange={() => {
-                                const newSelected = new Set(selectedCategories)
-                                if (newSelected.has(cat.id)) {
-                                  newSelected.delete(cat.id)
-                                } else {
-                                  newSelected.add(cat.id)
-                                }
-                                setSelectedCategories(newSelected)
-                              }}
-                              className="w-3 h-3 mt-0.5 rounded border-stone-300 text-amber-600 focus:ring-amber-500"
-                            />
-                            <div className="flex-1 min-w-0">
-                              <span className="text-[11px] font-medium text-stone-700 block">{cat.label}</span>
-                              <span className="text-[10px] text-stone-400 block">{cat.description}</span>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                    
-                    {/* Size Filter */}
-                    <div className="mt-3 pt-3 border-t border-amber-200">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Ruler className="h-3.5 w-3.5 text-amber-600" />
-                        <span className="text-[11px] font-medium text-amber-700">Size Filter (acres)</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1">
-                          <input
-                            type="number"
-                            min={0}
-                            step={0.1}
-                            placeholder="Min"
-                            value={minAcres}
-                            onChange={(e) => setMinAcres(e.target.value)}
-                            className="w-full px-2 py-1.5 text-xs font-mono border border-amber-200 rounded focus:ring-1 focus:ring-amber-400 focus:border-amber-400 text-center bg-white placeholder:text-stone-300"
-                          />
-                        </div>
-                        <span className="text-[10px] text-stone-400">to</span>
-                        <div className="flex-1">
-                          <input
-                            type="number"
-                            min={0}
-                            step={0.1}
-                            placeholder="Max"
-                            value={maxAcres}
-                            onChange={(e) => setMaxAcres(e.target.value)}
-                            className="w-full px-2 py-1.5 text-xs font-mono border border-amber-200 rounded focus:ring-1 focus:ring-amber-400 focus:border-amber-400 text-center bg-white placeholder:text-stone-300"
-                          />
-                        </div>
-                      </div>
-                      <p className="text-[9px] text-amber-500 mt-1">Leave empty for no limit</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Job Titles (Contact-First Mode) */}
-                {discoveryMode === 'contact_first' && (
-                  <div>
-                    <button
-                      onClick={() => setShowAdvanced(!showAdvanced)}
-                      className="w-full flex items-center justify-between px-2 py-1.5 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 transition-colors"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <Briefcase className="h-3.5 w-3.5 text-emerald-600" />
-                        <span className="text-xs font-medium text-emerald-700">Job Titles</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-emerald-600">{selectedJobTitles.size} selected</span>
-                        {showAdvanced ? (
-                          <ChevronUp className="h-3.5 w-3.5 text-emerald-500" />
-                        ) : (
-                          <ChevronDown className="h-3.5 w-3.5 text-emerald-500" />
-                        )}
-                      </div>
-                    </button>
-                    
-                    {showAdvanced && (
-                      <div className="mt-2 p-2 border border-stone-200 rounded bg-white max-h-40 overflow-y-auto space-y-1">
-                        {DEFAULT_JOB_TITLES.map((title) => (
-                          <label 
-                            key={title}
-                            className="flex items-center gap-2 cursor-pointer hover:bg-stone-50 px-1.5 py-1 rounded"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedJobTitles.has(title)}
-                              onChange={() => {
-                                const newSelected = new Set(selectedJobTitles)
-                                if (newSelected.has(title)) {
-                                  newSelected.delete(title)
-                                } else {
-                                  newSelected.add(title)
-                                }
-                                setSelectedJobTitles(newSelected)
-                              }}
-                              className="w-3 h-3 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
-                            />
-                            <span className="text-[11px] text-stone-600">{title}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Business Types Toggle (Places Mode Only) */}
-                {discoveryMode === 'business_first' && (
+                {/* Property Categories */}
                 <div>
                   <button
                     onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="w-full flex items-center justify-between px-2 py-1.5 bg-stone-100 rounded hover:bg-stone-200 transition-colors"
+                    className="w-full flex items-center justify-between px-2 py-1.5 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 transition-colors"
                   >
-                    <span className="text-xs font-medium text-stone-600">Business Types</span>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-stone-400">{totalSelected} selected</span>
+                      <MapIcon className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="text-xs font-medium text-emerald-700">Property Types</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-emerald-600">{selectedCategories.size} selected</span>
                       {showAdvanced ? (
-                        <ChevronUp className="h-3.5 w-3.5 text-stone-400" />
+                        <ChevronUp className="h-3.5 w-3.5 text-emerald-500" />
                       ) : (
-                        <ChevronDown className="h-3.5 w-3.5 text-stone-400" />
+                        <ChevronDown className="h-3.5 w-3.5 text-emerald-500" />
                       )}
                     </div>
                   </button>
-
+                  
                   {showAdvanced && (
-                    <div className="mt-2 max-h-40 overflow-y-auto space-y-1.5 border border-stone-200 rounded p-2 bg-white">
-                      {BUSINESS_TIERS.map((tier) => {
-                        const tierCount = getTierSelectedCount(tier)
-                        const allSelected = tierCount === tier.types.length
-                        const isExpanded = expandedTiers.has(tier.id)
-                        
-                        const tierColors = {
-                          premium: { bg: 'bg-amber-50', icon: 'text-amber-500', border: 'border-amber-200' },
-                          high: { bg: 'bg-violet-50', icon: 'text-violet-500', border: 'border-violet-200' },
-                          standard: { bg: 'bg-stone-50', icon: 'text-stone-500', border: 'border-stone-200' },
-                        }
-                        const colors = tierColors[tier.id as keyof typeof tierColors] || tierColors.standard
-                        
-                        return (
-                          <div key={tier.id} className={`rounded border ${colors.border} overflow-hidden`}>
-                            <div className={`flex items-center gap-2 px-2 py-1.5 ${colors.bg}`}>
-                              <button
-                                onClick={() => toggleTier(tier.id)}
-                                className={`w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
-                                  allSelected 
-                                    ? 'bg-stone-700 border-stone-700 text-white' 
-                                    : tierCount > 0
-                                    ? 'bg-stone-300 border-stone-400'
-                                    : 'border-stone-300 bg-white'
-                                }`}
-                              >
-                                {allSelected && <CheckCircle2 className="h-2.5 w-2.5" />}
-                              </button>
-                              
-                              <div 
-                                className="flex-1 flex items-center gap-1.5 cursor-pointer" 
-                                onClick={() => toggleTierExpand(tier.id)}
-                              >
-                                {getTierIcon(tier.icon, `h-3 w-3 ${colors.icon}`)}
-                                <span className="text-[11px] font-medium text-stone-700">{tier.label}</span>
-                                <span className="text-[10px] text-stone-400">
-                                  {tierCount}/{tier.types.length}
-                                </span>
-                              </div>
-                              
-                              <button onClick={() => toggleTierExpand(tier.id)} className="p-0.5">
-                                {isExpanded ? (
-                                  <ChevronUp className="h-3 w-3 text-stone-400" />
-                                ) : (
-                                  <ChevronDown className="h-3 w-3 text-stone-400" />
-                                )}
-                              </button>
-                            </div>
-                            
-                            {isExpanded && (
-                              <div className="px-2 py-1.5 space-y-0.5 bg-white">
-                                {tier.types.map((type) => (
-                                  <label 
-                                    key={type.id}
-                                    className="flex items-center gap-2 cursor-pointer hover:bg-stone-50 px-1.5 py-1 rounded"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedTypes.has(type.id)}
-                                      onChange={() => toggleType(type.id)}
-                                      className="w-3 h-3 rounded border-stone-300 text-stone-700 focus:ring-stone-500"
-                                    />
-                                    <span className="text-[11px] text-stone-600">{type.label}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            )}
+                    <div className="mt-2 p-2 border border-emerald-200 rounded bg-white space-y-1">
+                      {PROPERTY_CATEGORIES.map((cat) => (
+                        <label 
+                          key={cat.id}
+                          className="flex items-start gap-2 cursor-pointer hover:bg-emerald-50 px-1.5 py-1.5 rounded"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedCategories.has(cat.id)}
+                            onChange={() => {
+                              const newSelected = new Set(selectedCategories)
+                              if (newSelected.has(cat.id)) {
+                                newSelected.delete(cat.id)
+                              } else {
+                                newSelected.add(cat.id)
+                              }
+                              setSelectedCategories(newSelected)
+                            }}
+                            className="w-3 h-3 mt-0.5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[11px] font-medium text-stone-700 block">{cat.label}</span>
+                            <span className="text-[10px] text-stone-400 block">{cat.description}</span>
                           </div>
-                        )
-                      })}
+                        </label>
+                      ))}
                     </div>
                   )}
+                  
+                  {/* Size Filter */}
+                  <div className="mt-3 pt-3 border-t border-emerald-200">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Ruler className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="text-[11px] font-medium text-emerald-700">Size Filter (acres)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          placeholder="Min"
+                          value={minAcres}
+                          onChange={(e) => setMinAcres(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs font-mono border border-emerald-200 rounded focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 text-center bg-white placeholder:text-stone-300"
+                        />
+                      </div>
+                      <span className="text-[10px] text-stone-400">to</span>
+                      <div className="flex-1">
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          placeholder="Max"
+                          value={maxAcres}
+                          onChange={(e) => setMaxAcres(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs font-mono border border-emerald-200 rounded focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 text-center bg-white placeholder:text-stone-300"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[9px] text-emerald-500 mt-1">Leave empty for no limit</p>
+                  </div>
                 </div>
-                )}
 
                 {/* Scoring Criteria */}
                 <div>
@@ -1008,40 +648,18 @@ export function DiscoveryCard({
                   </button>
                   <button
                     onClick={handleConfirm}
-                    disabled={
-                      isDiscovering || 
-                      (discoveryMode === 'contact_first' ? selectedJobTitles.size === 0 : 
-                       discoveryMode === 'regrid_first' ? selectedCategories.size === 0 :
-                       totalSelected === 0)
-                    }
-                    className={cn(
-                      "flex-1 px-3 py-2 rounded text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5",
-                      discoveryMode === 'contact_first' 
-                        ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                        : discoveryMode === 'regrid_first'
-                        ? "bg-amber-600 text-white hover:bg-amber-700"
-                        : "bg-stone-800 text-white hover:bg-stone-700"
-                    )}
+                    disabled={isDiscovering || selectedCategories.size === 0}
+                    className="flex-1 px-3 py-2 rounded text-xs font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
                   >
                     {isDiscovering ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         <span>Starting...</span>
                       </>
-                    ) : discoveryMode === 'contact_first' ? (
-                      <>
-                        <Users className="h-3.5 w-3.5" />
-                        <span>Find Leads</span>
-                      </>
-                    ) : discoveryMode === 'regrid_first' ? (
-                      <>
-                        <MapIcon className="h-3.5 w-3.5" />
-                        <span>Find Properties</span>
-                      </>
                     ) : (
                       <>
                         <Search className="h-3.5 w-3.5" />
-                        <span>Discover</span>
+                        <span>Find Properties</span>
                       </>
                     )}
                   </button>

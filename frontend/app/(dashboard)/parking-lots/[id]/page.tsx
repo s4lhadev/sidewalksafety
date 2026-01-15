@@ -68,11 +68,18 @@ export default function ParkingLotDetailPage() {
     queryFn: scoringPromptsApi.list,
   })
 
-  // Analyze mutation
+  // Analyze mutation (full flow: imagery → VLM → enrichment)
   const analyzeMutation = useMutation({
     mutationFn: (request: AnalyzePropertyRequest) => 
       parkingLotsApi.analyzeProperty(parkingLotId, request),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Store enrichment result if available from the full analysis
+      if (data.enrichment?.steps || data.enrichment?.detailed_steps) {
+        setEnrichmentResult({ 
+          steps: data.enrichment.steps,
+          enrichment_detailed_steps: data.enrichment.detailed_steps
+        })
+      }
       queryClient.invalidateQueries({ queryKey: ['parking-lot', parkingLotId] })
       setShowAnalyzeModal(false)
     },
