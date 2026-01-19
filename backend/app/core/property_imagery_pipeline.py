@@ -19,6 +19,7 @@ from PIL import Image
 
 from app.core.regrid_service import regrid_service, PropertyParcel
 from app.core.polygon_imagery_service import get_polygon_imagery_service
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -145,22 +146,37 @@ class PropertyImageryPipeline:
             logger.info(f"    Created estimated polygon (~100m x 100m)")
         
         # ============ Step 2: Fetch Satellite Imagery ============
-        logger.info(f"\n[2] Fetching satellite imagery...")
+        # Use Google Static Maps API if key available (best quality), otherwise ESRI (free)
+        source = "google" if settings.GOOGLE_MAPS_KEY else "esri"
+        logger.info(f"\n[2] Fetching satellite imagery (source: {source})...")
         
         try:
-            img, metadata = self.imagery_service.get_polygon_image(
-                polygon=polygon,
-                zoom=zoom,
-                draw_boundary=draw_boundary,
-                boundary_color=self.DEFAULT_BOUNDARY_COLOR,
-                boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
-                padding_percent=self.DEFAULT_PADDING_PERCENT,
-                source="google",
-            )
+            # Use async method for Google (API call), sync for ESRI (tile stitching)
+            if source == "google":
+                img, metadata = await self.imagery_service.get_polygon_image_async(
+                    polygon=polygon,
+                    zoom=zoom,
+                    draw_boundary=draw_boundary,
+                    boundary_color=self.DEFAULT_BOUNDARY_COLOR,
+                    boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
+                    padding_percent=self.DEFAULT_PADDING_PERCENT,
+                    source="google",
+                )
+                logger.info(f"    Source: Google Static Maps API (legitimate, ~$0.002/request)")
+            else:
+                img, metadata = self.imagery_service.get_polygon_image(
+                    polygon=polygon,
+                    zoom=zoom,
+                    draw_boundary=draw_boundary,
+                    boundary_color=self.DEFAULT_BOUNDARY_COLOR,
+                    boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
+                    padding_percent=self.DEFAULT_PADDING_PERCENT,
+                    source="esri",
+                )
+                logger.info(f"    Source: ESRI WorldImagery (free)")
             
             logger.info(f"    Image size: {img.size[0]}x{img.size[1]} pixels")
             logger.info(f"    Property area: {metadata.get('polygon_area_sqm', 0):.0f} m²")
-            logger.info(f"    Source: Google Satellite Tiles")
             
         except Exception as e:
             logger.error(f"    Imagery fetch failed: {e}")
@@ -174,15 +190,26 @@ class PropertyImageryPipeline:
             self._save_debug_image(img, lat, lng, parcel)
         
         # ============ Step 4: Get Base64 for API usage ============
-        base64_str, _ = self.imagery_service.get_polygon_image_base64(
-            polygon=polygon,
-            zoom=zoom,
-            draw_boundary=draw_boundary,
-            boundary_color=self.DEFAULT_BOUNDARY_COLOR,
-            boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
-            padding_percent=self.DEFAULT_PADDING_PERCENT,
-            source="google",
-        )
+        if source == "google":
+            base64_str, _ = await self.imagery_service.get_polygon_image_base64_async(
+                polygon=polygon,
+                zoom=zoom,
+                draw_boundary=draw_boundary,
+                boundary_color=self.DEFAULT_BOUNDARY_COLOR,
+                boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
+                padding_percent=self.DEFAULT_PADDING_PERCENT,
+                source="google",
+            )
+        else:
+            base64_str, _ = self.imagery_service.get_polygon_image_base64(
+                polygon=polygon,
+                zoom=zoom,
+                draw_boundary=draw_boundary,
+                boundary_color=self.DEFAULT_BOUNDARY_COLOR,
+                boundary_width=self.DEFAULT_BOUNDARY_WIDTH,
+                padding_percent=self.DEFAULT_PADDING_PERCENT,
+                source="esri",
+            )
         
         logger.info(f"\n[COMPLETE] Property imagery ready")
         logger.info(f"{'='*60}\n")

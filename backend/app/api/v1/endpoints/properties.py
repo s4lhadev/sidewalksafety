@@ -586,7 +586,7 @@ async def preview_property_at_location(
         property_id=db_property.id,
         metadata={"lat": request.lat, "lng": request.lng, "found": result.parcel is not None}
     )
-    # Note: Google satellite tiles via contextily are FREE (raw tile server, not official API)
+    # Note: Uses Google Static Maps API if GOOGLE_MAPS_KEY configured, otherwise ESRI (free)
     
     # Build response
     response = {

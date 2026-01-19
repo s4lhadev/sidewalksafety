@@ -7,7 +7,7 @@ BILLING MODELS:
 - OpenRouter: Per-token billing, returns actual cost in API response
 - Google Places: Per-request (~$17-32/1K) with $200 free credit/month
 - Regrid: Subscription-based with monthly API call quota (NOT per-call billing)
-- Google Satellite (contextily): FREE - uses raw tile server, not official API
+- Google Static Maps API: ~$2/1000 requests (legitimate API with $200 free credit/month)
 """
 
 import logging
@@ -42,9 +42,9 @@ SERVICE_INFO = {
         "estimate_per_call": 0.0,  # Included in subscription
     },
     "google_satellite": {
-        "billing": "free",
-        "note": "Raw tile server (contextily), not official Google API",
-        "estimate_per_call": 0.0,
+        "billing": "per_request",
+        "note": "Google Static Maps API - legitimate (~$200 free credit/month)",
+        "estimate_per_call": 0.002,  # ~$2 per 1000 requests
     },
     "apollo": {
         "billing": "per_credit",
@@ -261,7 +261,7 @@ class UsageTrackingService:
                 "openrouter": "Actual cost (per-token)",
                 "google_places": "Estimated (~$200 free/month, then ~$20/1K)",
                 "regrid": "Subscription-based (quota only)",
-                "google_satellite": "Free (raw tile server)",
+                "google_satellite": "~$2/1K requests ($200 free credit/month)",
             }
         }
     
