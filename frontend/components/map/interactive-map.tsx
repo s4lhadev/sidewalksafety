@@ -5,19 +5,19 @@ import { useQuery } from '@tanstack/react-query'
 import { APIProvider, Map, Marker, useMap, InfoWindow, useMapsLibrary } from '@vis.gl/react-google-maps'
 import { MarkerClusterer, GridAlgorithm } from '@googlemaps/markerclusterer'
 import { DealMapResponse, PropertyAnalysisSummary } from '@/types'
-import { MapPin, ExternalLink, Satellite, Map as MapIcon, X, CheckCircle2, Clock, Target, Building2, Phone, Globe, AlertTriangle, Search, Loader2, Layers, User, Pentagon } from 'lucide-react'
+import { MapPin, ExternalLink, Satellite, Map as MapIcon, X, CheckCircle2, Clock, Target, Building2, Phone, Globe, AlertTriangle, Search, Loader2, Layers, User, Pentagon, Mountain, ChevronDown, Check, AlertCircle } from 'lucide-react'
 import { StatusChip, IconChip } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { parkingLotsApi } from '@/lib/api/parking-lots'
 import { SearchParcel } from '@/lib/api/search'
 import { BoundaryLayerResponse, BoundaryFeature, boundariesApi } from '@/lib/api/boundaries'
 
-// Boundary layer colors
-const BOUNDARY_LAYER_COLORS: Record<string, { stroke: string; fill: string }> = {
-  states: { stroke: '#6366f1', fill: 'rgba(99, 102, 241, 0.08)' },
-  counties: { stroke: '#f59e0b', fill: 'rgba(245, 158, 11, 0.08)' },
-  zips: { stroke: '#10b981', fill: 'rgba(16, 185, 129, 0.05)' },
-  urban_areas: { stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.08)' },
+// Boundary layer colors - more vibrant and visible
+const BOUNDARY_LAYER_COLORS: Record<string, { stroke: string; fill: string; strokeWeight: number; fillOpacity: number }> = {
+  states: { stroke: '#6366f1', fill: 'rgba(99, 102, 241, 0.15)', strokeWeight: 3, fillOpacity: 0.12 },
+  counties: { stroke: '#f59e0b', fill: 'rgba(245, 158, 11, 0.15)', strokeWeight: 2.5, fillOpacity: 0.10 },
+  zips: { stroke: '#10b981', fill: 'rgba(16, 185, 129, 0.12)', strokeWeight: 2, fillOpacity: 0.08 },
+  urban_areas: { stroke: '#ef4444', fill: 'rgba(239, 68, 68, 0.18)', strokeWeight: 2.5, fillOpacity: 0.12 },
 }
 
 // Surface colors for polygon overlays
@@ -34,6 +34,10 @@ interface UrbanAreaInfo {
   name: string
   geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
 }
+
+// Parcel Tile Layer - shows parcel boundaries from our Regrid-powered backend
+const PARCEL_LAYER_MIN_ZOOM = 16 // Only show parcels at high zoom
+const PARCEL_LAYER_MAX_FEATURES = 2000 // Max features per request
 
 interface InteractiveMapProps {
   deals: DealMapResponse[]
@@ -62,6 +66,31 @@ interface InteractiveMapProps {
   showUrbanOverlay?: boolean
   selectedUrbanArea?: UrbanAreaInfo | null
   onUrbanAreaSelect?: (urbanArea: UrbanAreaInfo | null) => void
+  // ZIP display within urban area
+  showZipsInUrban?: boolean
+  selectedZip?: { id: string; code: string; name: string; geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null
+  onZipSelect?: (zip: { id: string; code: string; name: string; geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon } | null) => void
+  // Discovered places from Google Places + Regrid
+  discoveredPlaces?: Array<{
+    place_id: string
+    name: string
+    lat: number
+    lng: number
+    address?: string
+    rating?: number
+    user_ratings_count?: number
+    phone?: string
+    website?: string
+    primary_type?: string
+    parcel_geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon
+    parcel_address?: string
+    parcel_acreage?: number
+    parcel_owner?: string
+    parcel_apn?: string
+    parcel_centroid?: { lat: number; lng: number }
+  }>
+  selectedPlaceIds?: string[]
+  onPlaceClick?: (placeId: string) => void
 }
 
 // Clean, modern map style with subtle colors
@@ -184,6 +213,87 @@ const mapStyles: google.maps.MapTypeStyle[] = [
   },
 ]
 
+// Map3D Component for photorealistic 3D view
+// Uses Google's gmp-map-3d web component
+interface Map3DProps {
+  center: { lat: number; lng: number }
+  onCenterChange?: (center: { lat: number; lng: number }) => void
+}
+
+function Map3DView({ center, onCenterChange }: Map3DProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const map3dRef = useRef<any>(null)
+  
+  useEffect(() => {
+    if (!containerRef.current) return
+    
+    // Load the maps3d library dynamically
+    const loadMap3D = async () => {
+      try {
+        // @ts-ignore - maps3d types not available
+        await google.maps.importLibrary('maps3d')
+        
+        // Create the map3d element
+        // @ts-ignore
+        const Map3DElement = customElements.get('gmp-map-3d')
+        if (!Map3DElement) {
+          console.error('[Map3D] gmp-map-3d element not registered')
+          return
+        }
+        
+        // Clear previous
+        if (map3dRef.current) {
+          map3dRef.current.remove()
+        }
+        
+        // Create new map3d element
+        const map3d = document.createElement('gmp-map-3d')
+        map3d.setAttribute('mode', 'hybrid')
+        map3d.setAttribute('center', `${center.lat}, ${center.lng}, 500`)
+        map3d.setAttribute('range', '2000')
+        map3d.setAttribute('tilt', '60')
+        map3d.setAttribute('heading', '0')
+        map3d.style.width = '100%'
+        map3d.style.height = '100%'
+        
+        containerRef.current?.appendChild(map3d)
+        map3dRef.current = map3d
+        
+        // Listen for camera changes
+        map3d.addEventListener('gmp-centerchange', (e: any) => {
+          if (onCenterChange && e.detail?.center) {
+            onCenterChange({
+              lat: e.detail.center.lat,
+              lng: e.detail.center.lng,
+            })
+          }
+        })
+        
+      } catch (error) {
+        console.error('[Map3D] Error loading maps3d:', error)
+      }
+    }
+    
+    loadMap3D()
+    
+    return () => {
+      if (map3dRef.current) {
+        map3dRef.current.remove()
+        map3dRef.current = null
+      }
+    }
+  }, []) // Only run once on mount
+  
+  // Update center when it changes
+  useEffect(() => {
+    if (map3dRef.current) {
+      map3dRef.current.setAttribute('center', `${center.lat}, ${center.lng}, 500`)
+    }
+  }, [center.lat, center.lng])
+  
+  return <div ref={containerRef} className="w-full h-full" />
+}
+
 function MapController({
   onBoundsChange,
   onMapClick,
@@ -257,21 +367,162 @@ function CenterMapController({
   return null
 }
 
+// Map type options
+type MapBaseType = 'roadmap' | 'satellite' | 'terrain'
+
 function MapTypeController({
-  mapType,
-  onMapTypeChange,
+  baseType,
+  showLabels,
+  globeView,
 }: {
-  mapType: 'roadmap' | 'hybrid'
-  onMapTypeChange: (type: 'roadmap' | 'hybrid') => void
+  baseType: MapBaseType
+  showLabels: boolean
+  globeView: boolean
 }) {
   const map = useMap()
+  const globeViewRef = useRef(globeView)
+  
+  // Keep ref in sync
+  useEffect(() => {
+    globeViewRef.current = globeView
+  }, [globeView])
 
+  // Set map type
   useEffect(() => {
     if (!map) return
-    map.setMapTypeId(mapType)
-  }, [map, mapType])
+    
+    let mapTypeId: string = baseType
+    if (baseType === 'satellite' && showLabels) {
+      mapTypeId = 'hybrid'
+    }
+    map.setMapTypeId(mapTypeId)
+  }, [map, baseType, showLabels])
+  
+  // Set tilt and restore after fitBounds resets it
+  useEffect(() => {
+    if (!map) return
+    
+    const targetTilt = globeView ? 45 : 0
+    map.setTilt(targetTilt)
+    
+    // Listen for tilt changes (fitBounds resets tilt to 0)
+    // Restore tilt if globe view is active
+    const handleTiltChanged = () => {
+      if (globeViewRef.current) {
+        const currentTilt = map.getTilt() || 0
+        if (currentTilt === 0) {
+          // Small delay to let fitBounds complete, then restore tilt
+          setTimeout(() => {
+            if (globeViewRef.current && map.getTilt() === 0) {
+              map.setTilt(45)
+            }
+          }, 100)
+        }
+      }
+    }
+    
+    const listener = map.addListener('tilt_changed', handleTiltChanged)
+    
+    return () => {
+      google.maps.event.removeListener(listener)
+    }
+  }, [map, globeView])
 
   return null
+}
+
+// Configure Street View panorama options, track visibility, and auto-enter on max zoom in globe view
+function StreetViewConfig({ 
+  onVisibilityChange, 
+  globeView 
+}: { 
+  onVisibilityChange: (visible: boolean) => void
+  globeView: boolean 
+}) {
+  const map = useMap()
+  const MAX_ZOOM_THRESHOLD = 21 // Trigger Street View at this zoom level
+  
+  useEffect(() => {
+    if (!map) return
+    
+    const streetView = map.getStreetView()
+    if (!streetView) return
+    
+    // Configure Street View options
+    streetView.setOptions({
+      addressControlOptions: {
+        position: google.maps.ControlPosition.BOTTOM_CENTER
+      },
+      enableCloseButton: true,
+      showRoadLabels: true
+    })
+    
+    // Listen for Street View visibility changes
+    const visibilityListener = streetView.addListener('visible_changed', () => {
+      onVisibilityChange(streetView.getVisible())
+    })
+    
+    return () => {
+      google.maps.event.removeListener(visibilityListener)
+    }
+  }, [map, onVisibilityChange])
+  
+  // Auto-enter Street View on max zoom when globe view is active
+  useEffect(() => {
+    if (!map || !globeView) return
+    
+    const handleZoomChange = () => {
+      const zoom = map.getZoom()
+      if (zoom && zoom >= MAX_ZOOM_THRESHOLD) {
+        const streetView = map.getStreetView()
+        if (streetView && !streetView.getVisible()) {
+          const center = map.getCenter()
+          if (center) {
+            streetView.setPosition(center)
+            streetView.setPov({ heading: 0, pitch: 0 })
+            streetView.setVisible(true)
+          }
+        }
+      }
+    }
+    
+    const zoomListener = map.addListener('zoom_changed', handleZoomChange)
+    
+    return () => {
+      google.maps.event.removeListener(zoomListener)
+    }
+  }, [map, globeView])
+  
+  return null
+}
+
+// Helper component for map type menu options
+function MapTypeOption({ 
+  icon, 
+  label, 
+  active, 
+  onClick 
+}: { 
+  icon: React.ReactNode
+  label: string
+  active: boolean
+  onClick: () => void 
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm transition-colors",
+        active 
+          ? "bg-blue-50 text-blue-700" 
+          : "text-slate-700 hover:bg-slate-50"
+      )}
+    >
+      {icon}
+      <span className="flex-1 text-left">{label}</span>
+      {active && <Check className="h-4 w-4 text-blue-600" />}
+    </button>
+  )
 }
 
 // Search box component using Google Places Autocomplete
@@ -426,6 +677,198 @@ function SearchLocationController({
     map.setZoom(14) // Good zoom for city/area view
   }, [map, searchLocation])
   
+  return null
+}
+
+// ArcGIS Parcel Tile Layer - renders parcel boundaries from Regrid's free ArcGIS service
+// Keeps loaded parcels visible when panning (accumulative loading)
+// Now uses Polygons with hover effects
+function ParcelTileLayer({ 
+  enabled,
+  onStatusChange,
+  onParcelCountChange,
+}: { 
+  enabled: boolean
+  onStatusChange?: (status: 'idle' | 'loading' | 'zoom_low') => void
+  onParcelCountChange?: (count: number) => void
+}) {
+  const map = useMap()
+  const polygonsRef = useRef<google.maps.Polygon[]>([])
+  const loadedBoundsRef = useRef<Set<string>>(new Set())
+  const loadedParcelIdsRef = useRef<Set<string>>(new Set())
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const isZoomLowRef = useRef(false)
+
+  useEffect(() => {
+    if (!map) return
+
+    // Clear all when disabled
+    if (!enabled) {
+      polygonsRef.current.forEach(p => p.setMap(null))
+      polygonsRef.current = []
+      loadedBoundsRef.current.clear()
+      loadedParcelIdsRef.current.clear()
+      isZoomLowRef.current = false
+      onStatusChange?.('idle')
+      onParcelCountChange?.(0)
+      return
+    }
+
+    const loadParcels = async () => {
+      const zoom = map.getZoom()
+      if (!zoom || zoom < PARCEL_LAYER_MIN_ZOOM) {
+        onStatusChange?.('zoom_low')
+        isZoomLowRef.current = true
+        return
+      }
+      
+      isZoomLowRef.current = false
+
+      const bounds = map.getBounds()
+      if (!bounds) return
+
+      const ne = bounds.getNorthEast()
+      const sw = bounds.getSouthWest()
+      
+      const boundsKey = `${sw.lng().toFixed(3)},${sw.lat().toFixed(3)},${ne.lng().toFixed(3)},${ne.lat().toFixed(3)}`
+      
+      if (loadedBoundsRef.current.has(boundsKey)) {
+        onStatusChange?.('idle')
+        return
+      }
+      
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+      abortControllerRef.current = new AbortController()
+
+      onStatusChange?.('loading')
+
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/discover/viewport`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            min_lng: sw.lng(),
+            min_lat: sw.lat(),
+            max_lng: ne.lng(),
+            max_lat: ne.lat(),
+            limit: PARCEL_LAYER_MAX_FEATURES,
+          }),
+          signal: abortControllerRef.current.signal,
+        })
+
+        if (!response.ok) throw new Error('Failed to fetch parcels')
+
+        const data = await response.json()
+        
+        loadedBoundsRef.current.add(boundsKey)
+        
+        let newParcelsCount = 0
+
+        // Render parcel boundaries as Polygons with hover effects
+        if (data.success && data.parcels && data.parcels.length > 0) {
+          data.parcels.forEach((parcel: any) => {
+            if (!parcel.geometry) return
+            
+            const parcelId = parcel.parcel_id || parcel.id || JSON.stringify(parcel.geometry.coordinates[0]?.[0])
+            
+            if (loadedParcelIdsRef.current.has(parcelId)) return
+            loadedParcelIdsRef.current.add(parcelId)
+            newParcelsCount++
+
+            const createPolygon = (rings: number[][]) => {
+              // Convert ring coordinates to Google Maps format
+              const path = rings.map(([lng, lat]) => ({ lat, lng }))
+              
+              const polygon = new google.maps.Polygon({
+                paths: path,
+                strokeColor: '#d97706', // Amber-600
+                strokeOpacity: 1,
+                strokeWeight: 1.5,
+                fillColor: '#fbbf24', // Amber-400
+                fillOpacity: 0.08,
+                map,
+                clickable: true,
+                zIndex: 100, // High z-index to be above other layers
+              })
+              
+              // Elegant hover effects
+              polygon.addListener('mouseover', () => {
+                polygon.setOptions({
+                  strokeColor: '#f59e0b', // Brighter amber
+                  strokeWeight: 3,
+                  strokeOpacity: 1,
+                  fillColor: '#fbbf24',
+                  fillOpacity: 0.35,
+                  zIndex: 200,
+                })
+              })
+              
+              polygon.addListener('mouseout', () => {
+                polygon.setOptions({
+                  strokeColor: '#d97706',
+                  strokeWeight: 1.5,
+                  strokeOpacity: 1,
+                  fillColor: '#fbbf24',
+                  fillOpacity: 0.08,
+                  zIndex: 100,
+                })
+              })
+              
+              polygonsRef.current.push(polygon)
+            }
+
+            // Handle Polygon geometry (array of rings)
+            if (parcel.geometry.type === 'Polygon') {
+              // For polygon, coordinates is an array of rings
+              // First ring is outer, rest are holes
+              parcel.geometry.coordinates.forEach((ring: number[][]) => {
+                createPolygon(ring)
+              })
+            } else if (parcel.geometry.type === 'MultiPolygon') {
+              // For multipolygon, coordinates is array of polygons, each with rings
+              parcel.geometry.coordinates.forEach((polygon: number[][][]) => {
+                polygon.forEach((ring: number[][]) => {
+                  createPolygon(ring)
+                })
+              })
+            }
+          })
+          
+          if (newParcelsCount > 0) {
+            console.log(`[ParcelLayer] Added ${newParcelsCount} new parcels (total: ${loadedParcelIdsRef.current.size})`)
+          }
+        }
+        
+        onParcelCountChange?.(loadedParcelIdsRef.current.size)
+        onStatusChange?.('idle')
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
+          console.error('[ParcelLayer] Error loading parcels:', error)
+          onStatusChange?.('idle')
+        }
+      }
+    }
+
+    const listener = map.addListener('idle', loadParcels)
+    loadParcels()
+
+    return () => {
+      google.maps.event.removeListener(listener)
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [map, enabled, onStatusChange, onParcelCountChange])
+
+  useEffect(() => {
+    return () => {
+      polygonsRef.current.forEach(p => p.setMap(null))
+      polygonsRef.current = []
+    }
+  }, [])
+
   return null
 }
 
@@ -710,17 +1153,34 @@ export function InteractiveMap({
   showUrbanOverlay = false,
   selectedUrbanArea,
   onUrbanAreaSelect,
+  showZipsInUrban = false,
+  selectedZip,
+  onZipSelect,
+  discoveredPlaces = [],
+  selectedPlaceIds = [],
+  onPlaceClick,
 }: InteractiveMapProps) {
-  const [mapType, setMapType] = useState<'roadmap' | 'hybrid'>('roadmap')
+  // Map view state
+  const [mapBaseType, setMapBaseType] = useState<MapBaseType>('roadmap')
+  const [globeView, setGlobeView] = useState(false) // 3D rotatable view
+  const [showLabels, setShowLabels] = useState(true) // Labels on satellite view
+  const [showMapTypeMenu, setShowMapTypeMenu] = useState(false)
+  const [isStreetViewActive, setIsStreetViewActive] = useState(false)
+  
   const [searchLocation, setSearchLocation] = useState<{ lat: number; lng: number; name: string } | null>(null)
   const [showOverlay, setShowOverlay] = useState(true) // Show property boundaries by default
   const [selectedSearchResult, setSelectedSearchResult] = useState<SearchParcel | null>(null)
+  const [showParcelLayer, setShowParcelLayer] = useState(false) // ArcGIS parcel boundaries layer
+  const [parcelLayerStatus, setParcelLayerStatus] = useState<'idle' | 'loading' | 'zoom_low'>('idle')
+  const [loadedParcelCount, setLoadedParcelCount] = useState(0) // Count of loaded parcels
+  const [parcelLayerKey, setParcelLayerKey] = useState(0) // Key to force re-mount and clear parcels
   
   // Preload urban areas data in background (silent, cached)
   // This ensures instant rendering when overlay is shown
+  // Note: US has ~3,500+ urban areas - use high limit to get all
   useQuery({
     queryKey: ['boundaries', 'urban_areas', 'preload'],
-    queryFn: () => boundariesApi.getLayer('urban_areas', undefined, 1000),
+    queryFn: () => boundariesApi.getLayer('urban_areas', undefined, 5000),
     staleTime: Infinity, // Cache forever
     gcTime: Infinity, // Keep in cache forever
     refetchOnMount: false,
@@ -754,10 +1214,6 @@ export function InteractiveMap({
     onDealSelect(deal)
   }, [onDealSelect])
 
-  const toggleMapType = useCallback(() => {
-    setMapType((prev) => (prev === 'roadmap' ? 'hybrid' : 'roadmap'))
-  }, [])
-
   if (!process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY) {
     return (
       <div className="flex items-center justify-center h-full bg-slate-50">
@@ -773,69 +1229,204 @@ export function InteractiveMap({
 
   return (
     <div className="relative w-full h-full cursor-crosshair">
-      <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY} libraries={['places']}>
-        {/* Top Controls: Search Bar */}
-        <div className="absolute top-4 left-4 z-10">
-          {/* Search Box */}
-          <PlaceSearchBox onPlaceSelect={handlePlaceSelect} />
-        </div>
+      <APIProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY} libraries={['places', 'geometry', 'maps3d']}>
+        {/* Top Controls: Search Bar - hidden in Street View */}
+        {!isStreetViewActive && (
+          <div className="absolute top-4 left-4 z-10">
+            <PlaceSearchBox onPlaceSelect={handlePlaceSelect} />
+          </div>
+        )}
 
-        {/* Bottom Right Controls: Map Type Toggle + Segments Toggle */}
-        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
-          {/* Show Overlay Toggle (only visible when deal is selected) */}
-          {selectedDeal && (
+        {/* Bottom Right Controls: Map Type + Parcel Layer - hidden in Street View */}
+        {!isStreetViewActive && (
+        <div className="absolute bottom-2.5 right-[72px] z-10 flex items-end gap-1.5">
+          {/* Map Type Selector */}
+          <div className="relative">
             <button
-              onClick={() => setShowOverlay(prev => !prev)}
-              className={cn(
-                "flex items-center gap-2 px-3 py-2.5 rounded-lg shadow-lg hover:shadow-xl transition-all border",
-                showOverlay 
-                  ? "bg-blue-500 text-white border-blue-600 hover:bg-blue-600" 
-                  : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-              )}
-              title={showOverlay ? 'Hide Property Boundaries' : 'Show Property Boundaries'}
+              onClick={() => setShowMapTypeMenu(prev => !prev)}
+              className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg shadow-md hover:shadow-lg transition-all border bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-800"
+              title="Map options"
             >
               <Layers className="h-4 w-4" />
-              <span className="text-sm font-medium">Segments</span>
+              <ChevronDown className={cn("h-3 w-3 transition-transform", showMapTypeMenu && "rotate-180")} />
             </button>
-          )}
-          
-          {/* Map Type Toggle Button */}
-          <button
-            onClick={toggleMapType}
-            className="flex items-center gap-2 px-3 py-2.5 bg-white rounded-lg shadow-lg hover:shadow-xl transition-all hover:scale-105 border border-slate-200"
-            title={mapType === 'roadmap' ? 'Switch to Satellite' : 'Switch to Map'}
-          >
-            {mapType === 'roadmap' ? (
+            
+            {/* Map Type Dropdown Menu */}
+            {showMapTypeMenu && (
               <>
-                <Satellite className="h-4 w-4 text-slate-700" />
-                <span className="text-sm font-medium text-slate-700">Satellite</span>
-              </>
-            ) : (
-              <>
-                <MapIcon className="h-4 w-4 text-slate-700" />
-                <span className="text-sm font-medium text-slate-700">Map</span>
+                {/* Backdrop to close menu */}
+                <div 
+                  className="fixed inset-0 z-10" 
+                  onClick={() => setShowMapTypeMenu(false)} 
+                />
+                <div className="absolute bottom-full right-0 mb-2 w-48 bg-white rounded-lg shadow-xl border border-slate-200 overflow-hidden z-20">
+                  {/* Map Type Section */}
+                  <div className="p-2 border-b border-slate-100">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2 mb-1">Map Type</p>
+                    <MapTypeOption 
+                      icon={<MapIcon className="h-4 w-4" />}
+                      label="Default"
+                      active={mapBaseType === 'roadmap'}
+                      onClick={() => { setMapBaseType('roadmap'); setShowMapTypeMenu(false) }}
+                    />
+                    <MapTypeOption 
+                      icon={<Satellite className="h-4 w-4" />}
+                      label="Satellite"
+                      active={mapBaseType === 'satellite'}
+                      onClick={() => { setMapBaseType('satellite'); setShowMapTypeMenu(false) }}
+                    />
+                    <MapTypeOption 
+                      icon={<Mountain className="h-4 w-4" />}
+                      label="Terrain"
+                      active={mapBaseType === 'terrain'}
+                      onClick={() => { setMapBaseType('terrain'); setShowMapTypeMenu(false) }}
+                    />
+                  </div>
+                  
+                  {/* View Options Section */}
+                  <div className="p-2">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2 mb-1">View</p>
+                    {/* Globe View Toggle */}
+                    <button
+                      onClick={() => setGlobeView(prev => !prev)}
+                      className="w-full flex items-center justify-between px-2 py-1.5 rounded hover:bg-slate-50 transition-colors"
+                    >
+                      <span className="flex items-center gap-2 text-sm text-slate-700">
+                        <Globe className="h-4 w-4" />
+                        Globe view
+                        {mapBaseType === 'satellite' && (
+                          <span className="text-[9px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded">3D</span>
+                        )}
+                      </span>
+                      <div className={cn(
+                        "w-8 h-4 rounded-full transition-colors relative",
+                        globeView ? "bg-blue-500" : "bg-slate-300"
+                      )}>
+                        <div className={cn(
+                          "absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
+                          globeView ? "translate-x-4" : "translate-x-0.5"
+                        )} />
+                      </div>
+                    </button>
+                    {/* 3D Mode hint */}
+                    {mapBaseType === 'satellite' && globeView && (
+                      <p className="text-[10px] text-amber-600 px-2 mt-1">Photorealistic 3D mode active</p>
+                    )}
+                    {/* Labels Toggle - only show when satellite is selected */}
+                    {mapBaseType === 'satellite' && (
+                      <button
+                        onClick={() => setShowLabels(prev => !prev)}
+                        className="w-full flex items-center justify-between px-2 py-1.5 rounded hover:bg-slate-50 transition-colors"
+                      >
+                        <span className="flex items-center gap-2 text-sm text-slate-700">
+                          <span className="h-4 w-4 flex items-center justify-center text-xs font-bold">Aa</span>
+                          Labels
+                        </span>
+                        <div className={cn(
+                          "w-8 h-4 rounded-full transition-colors relative",
+                          showLabels ? "bg-blue-500" : "bg-slate-300"
+                        )}>
+                          <div className={cn(
+                            "absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
+                            showLabels ? "translate-x-4" : "translate-x-0.5"
+                          )} />
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                </div>
               </>
             )}
+          </div>
+          
+          {/* Parcel Layer Toggle */}
+          <button
+            onClick={() => setShowParcelLayer(prev => !prev)}
+            className={cn(
+              "flex items-center gap-1.5 p-2 rounded-lg shadow-md hover:shadow-lg transition-all border",
+              showParcelLayer 
+                ? "bg-amber-500 text-white border-amber-600 hover:bg-amber-600" 
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-800"
+            )}
+            title={showParcelLayer ? 'Hide Parcel Boundaries' : 'Show Parcel Boundaries (zoom 16+)'}
+          >
+            <Pentagon className="h-4 w-4" />
+            {showParcelLayer && loadedParcelCount > 0 && (
+              <span className="text-xs font-medium">
+                {loadedParcelCount > 999 ? `${(loadedParcelCount / 1000).toFixed(1)}k` : loadedParcelCount}
+              </span>
+            )}
           </button>
+          
+          {/* Clear parcels button */}
+          {showParcelLayer && loadedParcelCount > 0 && (
+            <button
+              onClick={() => {
+                setParcelLayerKey(prev => prev + 1)
+                setLoadedParcelCount(0)
+              }}
+              className="p-2 rounded-lg shadow-md bg-white text-slate-500 border border-slate-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+              title="Clear loaded parcels"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
+        )}
+        
+        {/* Show Map3D for photorealistic 3D when satellite + globe view */}
+        {globeView && mapBaseType === 'satellite' ? (
+          <>
+            <Map3DView 
+              center={defaultCenter}
+              onCenterChange={(center) => {
+                // Could update state if needed
+              }}
+            />
+            {/* 3D Mode Notice - hidden in Street View */}
+            {!isStreetViewActive && (
+              <div className="absolute top-4 right-4 z-20 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 shadow-lg max-w-xs">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-xs font-medium text-amber-800">3D Photorealistic Mode</p>
+                    <p className="text-[10px] text-amber-600 mt-0.5">Overlays disabled. Switch to Default for full features.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
         <Map
           defaultCenter={defaultCenter}
           defaultZoom={dealsWithLocation.length > 0 ? 13 : 10}
+          defaultTilt={0}
           minZoom={3}
           gestureHandling="greedy"
           disableDefaultUI={true}
           zoomControl={false}
           mapTypeControl={false}
           fullscreenControl={false}
-          streetViewControl={false}
+          streetViewControl={true}
+          streetViewControlOptions={{ position: 9 }}
           clickableIcons={false}
-          styles={mapType === 'roadmap' ? mapStyles : undefined}
+          mapId={process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID}
+          styles={mapBaseType === 'roadmap' && !process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID ? mapStyles : undefined}
           className="w-full h-full"
         >
           <MapController onBoundsChange={onBoundsChange} onMapClick={onMapClick} />
-          <MapTypeController mapType={mapType} onMapTypeChange={setMapType} />
+          <MapTypeController baseType={mapBaseType} showLabels={showLabels} globeView={globeView} />
+          <StreetViewConfig onVisibilityChange={setIsStreetViewActive} globeView={globeView} />
           <CenterMapController selectedDeal={selectedDeal} />
           <SearchLocationController searchLocation={searchLocation} />
+          
+          {/* ArcGIS Parcel Tile Layer - shows all parcel boundaries (accumulative) */}
+          <ParcelTileLayer 
+            key={parcelLayerKey}
+            enabled={showParcelLayer} 
+            onStatusChange={setParcelLayerStatus}
+            onParcelCountChange={setLoadedParcelCount}
+          />
           
           {/* Property boundary and segment overlays */}
           <PropertyOverlay 
@@ -925,9 +1516,32 @@ export function InteractiveMap({
           )}
 
           {/* Selected Urban Area Highlight (when area is selected and overlay is hidden) */}
-          {selectedUrbanArea && !showUrbanOverlay && (
+          {selectedUrbanArea && !showUrbanOverlay && !showZipsInUrban && (
             <SelectedUrbanAreaLayer
               urbanArea={selectedUrbanArea}
+            />
+          )}
+
+          {/* ZIP Codes within Urban Area */}
+          {showZipsInUrban && selectedUrbanArea && (
+            <ZipsInUrbanOverlay
+              urbanArea={selectedUrbanArea}
+              selectedZip={selectedZip}
+              onZipSelect={onZipSelect}
+            />
+          )}
+
+          {/* Selected ZIP Layer - shows when ZIP is selected but not browsing all ZIPs */}
+          {!showZipsInUrban && selectedZip && (
+            <SelectedZipLayer zip={selectedZip} />
+          )}
+
+          {/* Discovered Places Layer - shows places from Google + parcel boundaries */}
+          {discoveredPlaces.length > 0 && (
+            <DiscoveredPlacesLayer
+              places={discoveredPlaces}
+              selectedPlaceIds={selectedPlaceIds}
+              onPlaceClick={onPlaceClick}
             />
           )}
 
@@ -941,9 +1555,23 @@ export function InteractiveMap({
 
           {/* Search result info window */}
         </Map>
+        )}
         
-        {/* Segment Legend - shows when overlay is visible and deal is selected */}
-        {selectedDeal && showOverlay && (
+        {/* Parcel Layer Status Hints - hidden in Street View */}
+        {!isStreetViewActive && showParcelLayer && parcelLayerStatus === 'zoom_low' && (
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 px-4 py-2 bg-amber-500 text-white text-sm font-medium rounded-lg shadow-lg">
+            Zoom in to see parcel boundaries (zoom {PARCEL_LAYER_MIN_ZOOM}+)
+          </div>
+        )}
+        {!isStreetViewActive && showParcelLayer && parcelLayerStatus === 'loading' && (
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 px-4 py-2 bg-white text-slate-700 text-sm font-medium rounded-lg shadow-lg flex items-center gap-2 border border-slate-200">
+            <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+            Loading parcels...
+          </div>
+        )}
+        
+        {/* Segment Legend - shows when overlay is visible and deal is selected, hidden in Street View */}
+        {!isStreetViewActive && selectedDeal && showOverlay && (
           <div className="absolute bottom-4 left-4 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg border border-slate-200 px-3 py-2">
             <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Detected Segments</div>
             <div className="flex items-center gap-3 text-xs">
@@ -1552,9 +2180,10 @@ function UrbanAreasOverlay({
   
   // Use React Query to fetch urban areas (uses cache if preloaded)
   // This will be instant if data was preloaded in InteractiveMap
+  // Note: US has ~3,500+ urban areas - use high limit to get all
   const { data: urbanAreas, isLoading } = useQuery({
     queryKey: ['boundaries', 'urban_areas', 'preload'],
-    queryFn: () => boundariesApi.getLayer('urban_areas', undefined, 1000),
+    queryFn: () => boundariesApi.getLayer('urban_areas', undefined, 5000),
     staleTime: Infinity,
     gcTime: Infinity,
     refetchOnMount: false,
@@ -1705,7 +2334,6 @@ function UrbanAreasOverlay({
       
       dataLayer.overrideStyle(event.feature, {
         strokeWeight: 3,
-        fillOpacity: 0.95,
       })
     })
     
@@ -1870,20 +2498,569 @@ function SelectedUrbanAreaLayer({
   return null
 }
 
+// Selected ZIP Layer - shows just the selected ZIP boundary and zooms to it
+function SelectedZipLayer({
+  zip,
+}: {
+  zip: { id: string; code: string; name: string; geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon }
+}) {
+  const map = useMap()
+  const polygonsRef = useRef<google.maps.Polygon[]>([])
+  const hasZoomedRef = useRef(false)
+  const lastZipIdRef = useRef<string | null>(null)
+  
+  useEffect(() => {
+    if (!map || !zip.geometry) return
+    
+    // Reset zoom flag if ZIP changed
+    if (lastZipIdRef.current !== zip.id) {
+      hasZoomedRef.current = false
+      lastZipIdRef.current = zip.id
+    }
+    
+    // Zoom to ZIP bounds (only once per ZIP)
+    if (!hasZoomedRef.current) {
+      const bounds = new google.maps.LatLngBounds()
+      
+      if (zip.geometry.type === 'Polygon') {
+        zip.geometry.coordinates.forEach(ring => {
+          ring.forEach(([lng, lat]) => {
+            bounds.extend({ lat, lng })
+          })
+        })
+      } else if (zip.geometry.type === 'MultiPolygon') {
+        zip.geometry.coordinates.forEach(polygon => {
+          polygon.forEach(ring => {
+            ring.forEach(([lng, lat]) => {
+              bounds.extend({ lat, lng })
+            })
+          })
+        })
+      }
+      
+      map.fitBounds(bounds, { top: 50, right: 320, bottom: 50, left: 50 })
+      hasZoomedRef.current = true
+      console.log('[SelectedZip] Zoomed to ZIP', zip.code)
+    }
+    
+    // Clear existing polygons
+    polygonsRef.current.forEach(p => p.setMap(null))
+    polygonsRef.current = []
+    
+    // Create polygon(s) for selected ZIP
+    const createPolygon = (coordinates: number[][][]): google.maps.Polygon => {
+      const exteriorPath = coordinates[0].map(([lng, lat]) => new google.maps.LatLng(lat, lng))
+      const holes = coordinates.slice(1).map(ring => 
+        ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng))
+      )
+      
+      return new google.maps.Polygon({
+        map,
+        paths: [exteriorPath, ...holes],
+        strokeColor: '#059669',  // Green border (same as selected ZIP)
+        strokeOpacity: 1,
+        strokeWeight: 3,
+        fillColor: '#059669',
+        fillOpacity: 0.15,
+        clickable: false,
+        zIndex: 20,
+      })
+    }
+    
+    if (zip.geometry.type === 'Polygon') {
+      const polygon = createPolygon(zip.geometry.coordinates)
+      polygonsRef.current.push(polygon)
+    } else if (zip.geometry.type === 'MultiPolygon') {
+      zip.geometry.coordinates.forEach((polygonCoords) => {
+        const polygon = createPolygon(polygonCoords)
+        polygonsRef.current.push(polygon)
+      })
+    }
+    
+    console.log('[SelectedZip] Rendered ZIP', zip.code)
+  }, [map, zip])
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      polygonsRef.current.forEach(p => p.setMap(null))
+      polygonsRef.current = []
+      hasZoomedRef.current = false
+      lastZipIdRef.current = null
+    }
+  }, [])
+  
+  return null
+}
+
+// Discovered Places Layer - shows parcel boundaries with hover info (no markers)
+interface DiscoveredPlace {
+  place_id: string
+  name: string
+  lat: number
+  lng: number
+  address?: string
+  rating?: number
+  user_ratings_count?: number
+  phone?: string
+  website?: string
+  primary_type?: string
+  parcel_geometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon
+  parcel_address?: string
+  parcel_acreage?: number
+  parcel_owner?: string
+  parcel_apn?: string
+  parcel_centroid?: { lat: number; lng: number }
+}
+
+function DiscoveredPlacesLayer({
+  places,
+  selectedPlaceIds,
+  onPlaceClick,
+}: {
+  places: DiscoveredPlace[]
+  selectedPlaceIds: string[]
+  onPlaceClick?: (placeId: string) => void
+}) {
+  const map = useMap()
+  const polygonsRef = useRef<Record<string, google.maps.Polygon[]>>({})
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null)
+  const hoveredPlaceRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!map) return
+
+    // Create info window for hover
+    if (!infoWindowRef.current) {
+      infoWindowRef.current = new google.maps.InfoWindow({ disableAutoPan: true })
+    }
+    const infoWindow = infoWindowRef.current
+
+    // Clear previous polygons
+    Object.values(polygonsRef.current).forEach(polys => polys.forEach(p => p.setMap(null)))
+    polygonsRef.current = {}
+
+    // Render each place - only parcels with geometry
+    places.forEach((place) => {
+      if (!place.parcel_geometry) return
+      
+      const isSelected = selectedPlaceIds.includes(place.place_id)
+      
+      // Colors: red for unselected, green for selected
+      const colors = isSelected 
+        ? { stroke: '#059669', fill: '#10b981' }  // Emerald green
+        : { stroke: '#dc2626', fill: '#ef4444' }  // Red
+
+      const createPolygon = (coordinates: number[][][]): google.maps.Polygon => {
+        const exteriorPath = coordinates[0].map(([lng, lat]) => new google.maps.LatLng(lat, lng))
+        const holes = coordinates.slice(1).map(ring =>
+          ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng))
+        )
+
+        const polygon = new google.maps.Polygon({
+          map,
+          paths: [exteriorPath, ...holes],
+          strokeColor: colors.stroke,
+          strokeOpacity: 1,
+          strokeWeight: isSelected ? 2.5 : 2,
+          fillColor: colors.fill,
+          fillOpacity: isSelected ? 0.35 : 0.25,
+          clickable: true,
+          zIndex: isSelected ? 30 : 25,
+        })
+
+        // Click handler
+        polygon.addListener('click', () => {
+          onPlaceClick?.(place.place_id)
+        })
+
+        // Hover handlers - show info window at parcel center
+        polygon.addListener('mouseover', () => {
+          hoveredPlaceRef.current = place.place_id
+          
+          // Highlight effect
+          polygon.setOptions({
+            strokeWeight: 3,
+            fillOpacity: isSelected ? 0.45 : 0.35,
+          })
+
+          // Build compact info content
+          const ratingStars = place.rating ? '★'.repeat(Math.round(place.rating)) + '☆'.repeat(5 - Math.round(place.rating)) : ''
+          const ratingText = place.rating ? `${place.rating.toFixed(1)} ${ratingStars}` : ''
+          const reviewsText = place.user_ratings_count ? `(${place.user_ratings_count.toLocaleString()} reviews)` : ''
+          
+          infoWindow.setContent(`
+            <style>
+              .gm-style-iw-chr{display:none!important}
+              .gm-style-iw{padding:0!important}
+              .gm-style-iw-d{overflow:hidden!important}
+            </style>
+            <div style="padding:10px 14px;max-width:280px;font-family:system-ui,-apple-system,sans-serif;">
+              <div style="font-weight:600;font-size:14px;color:#111;margin-bottom:6px;line-height:1.3;">
+                ${place.name}
+              </div>
+              ${place.primary_type ? `<div style="font-size:10px;color:#6b7280;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">${place.primary_type.replace(/_/g, ' ')}</div>` : ''}
+              <div style="font-size:11px;color:#374151;margin-bottom:4px;">${place.address || ''}</div>
+              ${ratingText ? `
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+                  <span style="font-size:12px;color:#f59e0b;">${ratingText}</span>
+                  <span style="font-size:10px;color:#9ca3af;">${reviewsText}</span>
+                </div>
+              ` : ''}
+              <div style="border-top:1px solid #e5e7eb;padding-top:8px;margin-top:4px;">
+                <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                  ${place.parcel_acreage ? `<div style="font-size:10px;"><span style="color:#6b7280;">Parcel:</span> <span style="color:#059669;font-weight:500;">${place.parcel_acreage.toFixed(2)} ac</span></div>` : ''}
+                  ${place.parcel_apn ? `<div style="font-size:10px;"><span style="color:#6b7280;">APN:</span> <span style="color:#374151;">${place.parcel_apn}</span></div>` : ''}
+                </div>
+                ${place.parcel_owner ? `<div style="font-size:10px;margin-top:4px;"><span style="color:#6b7280;">Owner:</span> <span style="color:#374151;">${place.parcel_owner}</span></div>` : ''}
+              </div>
+              ${place.phone || place.website ? `
+                <div style="display:flex;gap:8px;margin-top:8px;padding-top:6px;border-top:1px solid #f3f4f6;">
+                  ${place.phone ? `<span style="font-size:10px;color:#6b7280;">📞 ${place.phone}</span>` : ''}
+                  ${place.website ? `<span style="font-size:10px;color:#3b82f6;">🔗 Website</span>` : ''}
+                </div>
+              ` : ''}
+            </div>
+          `)
+          
+          // Position at parcel centroid (or place location as fallback)
+          const centerLat = place.parcel_centroid?.lat ?? place.lat
+          const centerLng = place.parcel_centroid?.lng ?? place.lng
+          infoWindow.setPosition({ lat: centerLat, lng: centerLng })
+          infoWindow.open(map)
+        })
+
+        polygon.addListener('mouseout', () => {
+          hoveredPlaceRef.current = null
+          
+          // Revert highlight
+          polygon.setOptions({
+            strokeWeight: isSelected ? 2.5 : 2,
+            fillOpacity: isSelected ? 0.35 : 0.25,
+          })
+          
+          infoWindow.close()
+        })
+
+        return polygon
+      }
+
+      const polygons: google.maps.Polygon[] = []
+      
+      if (place.parcel_geometry.type === 'Polygon') {
+        polygons.push(createPolygon(place.parcel_geometry.coordinates))
+      } else if (place.parcel_geometry.type === 'MultiPolygon') {
+        place.parcel_geometry.coordinates.forEach((coords) => {
+          polygons.push(createPolygon(coords))
+        })
+      }
+      
+      polygonsRef.current[place.place_id] = polygons
+    })
+
+    const parcelsRendered = Object.keys(polygonsRef.current).length
+    const placesWithoutParcel = places.filter(p => !p.parcel_geometry).length
+    console.log(`[DiscoveredPlaces] Rendered ${parcelsRendered} parcels (${placesWithoutParcel} places without geometry)`)
+
+    return () => {
+      infoWindow.close()
+    }
+  }, [map, places, selectedPlaceIds, onPlaceClick])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(polygonsRef.current).forEach(polys => polys.forEach(p => p.setMap(null)))
+      polygonsRef.current = {}
+      if (infoWindowRef.current) {
+        infoWindowRef.current.close()
+      }
+    }
+  }, [])
+
+  return null
+}
+
+// ZIP Codes within Urban Area Overlay
+interface ZipInfo {
+  id: string
+  code: string
+  name: string
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
+}
+
+function ZipsInUrbanOverlay({
+  urbanArea,
+  selectedZip,
+  onZipSelect,
+}: {
+  urbanArea: UrbanAreaInfo
+  selectedZip?: ZipInfo | null
+  onZipSelect?: (zip: ZipInfo | null) => void
+}) {
+  const map = useMap()
+  const dataLayerRef = useRef<google.maps.Data | null>(null)
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null)
+  const hoveredFeatureRef = useRef<string | null>(null)
+  const [zipsData, setZipsData] = useState<BoundaryFeature[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+
+  // Fetch ZIPs within the urban area
+  useEffect(() => {
+    if (!urbanArea.geometry) return
+
+    const fetchZips = async () => {
+      setIsLoading(true)
+      try {
+        const response = await boundariesApi.getZipsInArea(urbanArea.geometry, 500)
+        if (response.features && response.features.length > 0) {
+          setZipsData(response.features)
+          console.log(`[ZipsInUrban] Loaded ${response.features.length} ZIPs within ${urbanArea.name}`)
+        } else {
+          console.log('[ZipsInUrban] No ZIPs found or ZIP data not available')
+          setZipsData([])
+        }
+      } catch (error) {
+        console.error('[ZipsInUrban] Error fetching ZIPs:', error)
+        setZipsData([])
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchZips()
+  }, [urbanArea.geometry, urbanArea.name])
+
+  // Render ZIPs on map
+  useEffect(() => {
+    if (!map || zipsData.length === 0) return
+
+    // Create data layer
+    const dataLayer = new google.maps.Data({ map })
+    dataLayerRef.current = dataLayer
+
+    // Create info window
+    const infoWindow = new google.maps.InfoWindow()
+    infoWindowRef.current = infoWindow
+
+    // Add features
+    zipsData.forEach((feature) => {
+      try {
+        const geoJsonFeature = {
+          type: 'Feature' as const,
+          properties: feature.properties,
+          geometry: feature.geometry,
+        }
+        dataLayer.addGeoJson(geoJsonFeature)
+      } catch (e) {
+        // Skip invalid features
+      }
+    })
+
+    // Style function for ZIP boundaries
+    const applyStyle = () => {
+      dataLayer.setStyle((feature) => {
+        const featureId = feature.getProperty('id')
+        const isSelected = selectedZip?.id === featureId
+        const isHovered = hoveredFeatureRef.current === featureId
+
+        if (isSelected) {
+          return {
+            strokeColor: '#059669',
+            strokeOpacity: 1,
+            strokeWeight: 3,
+            fillColor: '#059669',
+            fillOpacity: 0.3,
+            clickable: true,
+            zIndex: 25,
+          }
+        } else if (isHovered) {
+          return {
+            strokeColor: '#0ea5e9',
+            strokeOpacity: 1,
+            strokeWeight: 2.5,
+            fillColor: '#0ea5e9',
+            fillOpacity: 0.25,
+            clickable: true,
+            zIndex: 20,
+          }
+        } else {
+          return {
+            strokeColor: '#10b981',
+            strokeOpacity: 0.7,
+            strokeWeight: 1.5,
+            fillColor: '#10b981',
+            fillOpacity: 0.08,
+            clickable: true,
+            zIndex: 15,
+          }
+        }
+      })
+    }
+
+    applyStyle()
+
+    // Click handler
+    const clickListener = dataLayer.addListener('click', (event: google.maps.Data.MouseEvent) => {
+      const feature = event.feature
+      const id = feature.getProperty('id') as string
+      const name = feature.getProperty('name') as string
+
+      // Get geometry
+      const geometry = feature.getGeometry()
+      let geoJson: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null
+
+      if (geometry) {
+        // Convert to GeoJSON
+        const type = geometry.getType()
+        if (type === 'Polygon') {
+          const poly = geometry as google.maps.Data.Polygon
+          const coords: number[][][] = []
+          poly.getArray().forEach((ring) => {
+            const ringCoords: number[][] = []
+            ring.getArray().forEach((latLng) => {
+              ringCoords.push([latLng.lng(), latLng.lat()])
+            })
+            coords.push(ringCoords)
+          })
+          geoJson = { type: 'Polygon', coordinates: coords }
+        } else if (type === 'MultiPolygon') {
+          const multiPoly = geometry as google.maps.Data.MultiPolygon
+          const coords: number[][][][] = []
+          multiPoly.getArray().forEach((poly) => {
+            const polyCoords: number[][][] = []
+            poly.getArray().forEach((ring) => {
+              const ringCoords: number[][] = []
+              ring.getArray().forEach((latLng) => {
+                ringCoords.push([latLng.lng(), latLng.lat()])
+              })
+              polyCoords.push(ringCoords)
+            })
+            coords.push(polyCoords)
+          })
+          geoJson = { type: 'MultiPolygon', coordinates: coords }
+        }
+      }
+
+      if (geoJson && onZipSelect) {
+        onZipSelect({
+          id,
+          code: name,
+          name,
+          geometry: geoJson,
+        })
+        // Close the info window after selection
+        infoWindow.close()
+      }
+    })
+
+    // Hover effect with highlighting and tooltip
+    const mouseoverListener = dataLayer.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
+      map.getDiv().style.cursor = 'pointer'
+      
+      const feature = event.feature
+      const featureId = feature.getProperty('id') as string
+      const name = feature.getProperty('name') as string
+      const description = feature.getProperty('description') as string | undefined
+      
+      // Update hovered state and restyle
+      hoveredFeatureRef.current = featureId
+      applyStyle()
+      
+      // Show compact info tooltip on hover
+      if (event.latLng) {
+        infoWindow.setContent(`
+          <style>.gm-style-iw-chr{display:none!important}.gm-style-iw{padding:0!important}.gm-style-iw-d{overflow:hidden!important}</style>
+          <div style="padding:6px 10px;font-weight:600;font-size:14px;color:#111;white-space:nowrap;">${name}</div>
+        `)
+        infoWindow.setPosition(event.latLng)
+        infoWindow.open(map)
+      }
+    })
+    
+    const mouseoutListener = dataLayer.addListener('mouseout', () => {
+      map.getDiv().style.cursor = ''
+      hoveredFeatureRef.current = null
+      applyStyle()
+      infoWindow.close()
+    })
+
+    return () => {
+      google.maps.event.removeListener(clickListener)
+      google.maps.event.removeListener(mouseoverListener)
+      google.maps.event.removeListener(mouseoutListener)
+      dataLayer.setMap(null)
+      infoWindow.close()
+    }
+  }, [map, zipsData, selectedZip?.id, onZipSelect])
+
+  // Update style when selection changes
+  useEffect(() => {
+    if (dataLayerRef.current) {
+      dataLayerRef.current.setStyle((feature) => {
+        const featureId = feature.getProperty('id')
+        const isSelected = selectedZip?.id === featureId
+        const isHovered = hoveredFeatureRef.current === featureId
+
+        if (isSelected) {
+          return {
+            strokeColor: '#059669',
+            strokeOpacity: 1,
+            strokeWeight: 3,
+            fillColor: '#059669',
+            fillOpacity: 0.3,
+            clickable: true,
+            zIndex: 25,
+          }
+        } else if (isHovered) {
+          return {
+            strokeColor: '#0ea5e9',
+            strokeOpacity: 1,
+            strokeWeight: 2.5,
+            fillColor: '#0ea5e9',
+            fillOpacity: 0.25,
+            clickable: true,
+            zIndex: 20,
+          }
+        } else {
+          return {
+            strokeColor: '#10b981',
+            strokeOpacity: 0.7,
+            strokeWeight: 1.5,
+            fillColor: '#10b981',
+            fillOpacity: 0.08,
+            clickable: true,
+            zIndex: 15,
+          }
+        }
+      })
+    }
+  }, [selectedZip?.id])
+
+  return null
+}
+
 // Global storage for boundary layer - uses Google Maps Data layer for efficiency
 const kmlDataStorage = {
   dataLayer: null as google.maps.Data | null,
   infoWindow: null as google.maps.InfoWindow | null,
   currentLayerId: '',
   featureCount: 0,
+  hoveredFeature: null as google.maps.Data.Feature | null,
+  mouseMoveListener: null as google.maps.MapsEventListener | null,
   
   clear(map?: google.maps.Map) {
     if (this.dataLayer) {
       this.dataLayer.setMap(null)
       this.dataLayer = null
     }
+    if (this.mouseMoveListener) {
+      google.maps.event.removeListener(this.mouseMoveListener)
+      this.mouseMoveListener = null
+    }
     this.currentLayerId = ''
     this.featureCount = 0
+    this.hoveredFeature = null
   }
 }
 
@@ -1935,13 +3112,13 @@ function KMLBoundaryLayerWrapper({
     const dataLayer = new google.maps.Data({ map })
     kmlDataStorage.dataLayer = dataLayer
     
-    // Style the features
+    // Style the features - more visible boundaries
     dataLayer.setStyle({
       strokeColor: colors.stroke,
-      strokeOpacity: 0.8,
-      strokeWeight: 1,
+      strokeOpacity: 0.9,
+      strokeWeight: colors.strokeWeight || 2,
       fillColor: colors.stroke,
-      fillOpacity: 0.05,
+      fillOpacity: colors.fillOpacity || 0.10,
     })
     
     // Add GeoJSON data
@@ -1955,16 +3132,85 @@ function KMLBoundaryLayerWrapper({
       return
     }
     
-    // Hover effect
-    dataLayer.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
-      dataLayer.overrideStyle(event.feature, {
-        strokeWeight: 2,
-        fillOpacity: 0.15,
+    // Hover effect - "sticky" hover that persists when mouse is over parcels
+    // This prevents the ZIP hover from disappearing when hovering parcels inside it
+    
+    const applyHoverStyle = (feature: google.maps.Data.Feature) => {
+      dataLayer.overrideStyle(feature, {
+        strokeWeight: (colors.strokeWeight || 2) + 2,
+        strokeOpacity: 1,
+        fillOpacity: (colors.fillOpacity || 0.10) + 0.15,
       })
+    }
+    
+    const removeHoverStyle = (feature: google.maps.Data.Feature) => {
+      dataLayer.revertStyle(feature)
+    }
+    
+    // Check if a point is inside a feature's geometry
+    const isPointInFeature = (latLng: google.maps.LatLng, feature: google.maps.Data.Feature): boolean => {
+      const geometry = feature.getGeometry()
+      if (!geometry) return false
+      
+      const geometryType = geometry.getType()
+      
+      if (geometryType === 'Polygon') {
+        const polygon = geometry as google.maps.Data.Polygon
+        const path = polygon.getArray()[0] // Outer ring
+        if (path) {
+          return google.maps.geometry.poly.containsLocation(latLng, new google.maps.Polygon({ paths: path.getArray() }))
+        }
+      } else if (geometryType === 'MultiPolygon') {
+        const multiPolygon = geometry as google.maps.Data.MultiPolygon
+        const polygons = multiPolygon.getArray()
+        for (const poly of polygons) {
+          const path = poly.getArray()[0]
+          if (path && google.maps.geometry.poly.containsLocation(latLng, new google.maps.Polygon({ paths: path.getArray() }))) {
+            return true
+          }
+        }
+      }
+      return false
+    }
+    
+    dataLayer.addListener('mouseover', (event: google.maps.Data.MouseEvent) => {
+      // If we're hovering a new feature, update
+      if (kmlDataStorage.hoveredFeature !== event.feature) {
+        // Remove style from old feature
+        if (kmlDataStorage.hoveredFeature) {
+          removeHoverStyle(kmlDataStorage.hoveredFeature)
+        }
+        // Apply style to new feature
+        kmlDataStorage.hoveredFeature = event.feature
+        applyHoverStyle(event.feature)
+      }
     })
     
-    dataLayer.addListener('mouseout', (event: google.maps.Data.MouseEvent) => {
-      dataLayer.revertStyle(event.feature)
+    // Instead of using mouseout directly (which fires when entering parcels),
+    // use mousemove on the map to detect when we REALLY leave the feature
+    if (kmlDataStorage.mouseMoveListener) {
+      google.maps.event.removeListener(kmlDataStorage.mouseMoveListener)
+    }
+    
+    // Throttle mousemove checks for performance (check every 50ms max)
+    let lastCheckTime = 0
+    const THROTTLE_MS = 50
+    
+    kmlDataStorage.mouseMoveListener = map.addListener('mousemove', (event: google.maps.MapMouseEvent) => {
+      if (!kmlDataStorage.hoveredFeature || !event.latLng) return
+      
+      // Throttle the check
+      const now = Date.now()
+      if (now - lastCheckTime < THROTTLE_MS) return
+      lastCheckTime = now
+      
+      // Check if we're still inside the hovered feature
+      if (!isPointInFeature(event.latLng, kmlDataStorage.hoveredFeature)) {
+        // We left the feature - remove hover style
+        // The mouseover event will handle entering a new feature
+        removeHoverStyle(kmlDataStorage.hoveredFeature)
+        kmlDataStorage.hoveredFeature = null
+      }
     })
     
     // Click to show info
@@ -2175,10 +3421,20 @@ function PolygonDrawingController({
   const map = useMap()
   const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null)
   const polygonCompleteListenerRef = useRef<google.maps.MapsEventListener | null>(null)
-
-  // Initialize drawing manager once
+  // Use ref to store callback so it doesn't trigger re-initialization
+  const onPolygonCompleteRef = useRef(onPolygonComplete)
+  
+  // Keep callback ref updated
   useEffect(() => {
-    if (!map || drawingManagerRef.current) return
+    onPolygonCompleteRef.current = onPolygonComplete
+  }, [onPolygonComplete])
+
+  // Initialize drawing manager once (only depends on map)
+  useEffect(() => {
+    if (!map) return
+    
+    // Already initialized
+    if (drawingManagerRef.current) return
 
     const loadDrawingManager = async () => {
       // @ts-ignore - google.maps.drawing may not be typed
@@ -2195,7 +3451,7 @@ function PolygonDrawingController({
           strokeWeight: 3,
           fillColor: '#10b981', // Lighter green
           fillOpacity: 0.15,
-          editable: true, // Allow editing after drawing
+          editable: false, // Don't allow editing - cleaner UX
           draggable: false,
           clickable: true,
         },
@@ -2203,12 +3459,15 @@ function PolygonDrawingController({
 
       drawingManager.setMap(map)
       drawingManagerRef.current = drawingManager
+      console.log('[Drawing] Manager initialized')
 
       // Listen for polygon completion
       polygonCompleteListenerRef.current = google.maps.event.addListener(
         drawingManager,
         'polygoncomplete',
         (polygon: google.maps.Polygon) => {
+          console.log('[Drawing] Polygon complete')
+          
           // Convert to GeoJSON
           const path = polygon.getPath()
           const coordinates: number[][] = []
@@ -2218,8 +3477,8 @@ function PolygonDrawingController({
             coordinates.push([point.lng(), point.lat()])
           }
           // Close the polygon
-          if (coordinates.length > 0 && coordinates[0][0] !== coordinates[coordinates.length - 1][0] || 
-              coordinates[0][1] !== coordinates[coordinates.length - 1][1]) {
+          if (coordinates.length > 0 && (coordinates[0][0] !== coordinates[coordinates.length - 1][0] || 
+              coordinates[0][1] !== coordinates[coordinates.length - 1][1])) {
             coordinates.push([coordinates[0][0], coordinates[0][1]])
           }
 
@@ -2234,36 +3493,40 @@ function PolygonDrawingController({
           // Disable drawing mode
           drawingManager.setDrawingMode(null)
 
-          onPolygonComplete(geoJson)
+          // Call callback via ref (avoids stale closure)
+          onPolygonCompleteRef.current(geoJson)
         }
       )
     }
 
     loadDrawingManager()
 
+    // Cleanup only on unmount
     return () => {
-      // Clean up listener
+      console.log('[Drawing] Cleanup')
       if (polygonCompleteListenerRef.current) {
         google.maps.event.removeListener(polygonCompleteListenerRef.current)
         polygonCompleteListenerRef.current = null
       }
-      // Clean up drawing manager
       if (drawingManagerRef.current) {
         drawingManagerRef.current.setMap(null)
         drawingManagerRef.current = null
       }
     }
-  }, [map, onPolygonComplete])
+  }, [map]) // Only depends on map, NOT on callback
 
   // Toggle drawing mode based on isEnabled prop
   useEffect(() => {
-    if (!drawingManagerRef.current) return
+    if (!drawingManagerRef.current) {
+      console.log('[Drawing] Manager not ready, isEnabled:', isEnabled)
+      return
+    }
 
     if (isEnabled) {
-      // Enable polygon drawing mode
+      console.log('[Drawing] Enabling drawing mode')
       drawingManagerRef.current.setDrawingMode(google.maps.drawing.OverlayType.POLYGON)
     } else {
-      // Disable drawing mode (but keep manager alive)
+      console.log('[Drawing] Disabling drawing mode')
       drawingManagerRef.current.setDrawingMode(null)
     }
   }, [isEnabled])

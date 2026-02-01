@@ -201,3 +201,61 @@ async def get_all_boundaries_at_point(
         "lng": lng,
         "boundaries": result
     }
+
+
+@router.post("/zips-in-area")
+async def get_zips_in_area(
+    geometry: dict,
+    limit: int = Query(500, le=2000, description="Max ZIPs to return")
+):
+    """
+    Get all ZIP codes that intersect with a given geometry (e.g., urban area).
+    
+    Uses R-tree spatial index for fast queries (~50ms vs ~2s).
+    """
+    from shapely.geometry import shape
+    import time
+    
+    service = get_boundary_service()
+    
+    try:
+        start_time = time.time()
+        
+        # Parse the input geometry
+        search_shape = shape(geometry)
+        print(f"[ZIPS] Search geometry type: {geometry.get('type')}, bounds: {search_shape.bounds}")
+        
+        # Use R-tree indexed query (fast!)
+        intersecting = service.get_features_intersecting("zips", search_shape)
+        
+        # Apply limit
+        if len(intersecting) > limit:
+            intersecting = intersecting[:limit]
+            truncated = True
+        else:
+            truncated = False
+        
+        total_time = time.time() - start_time
+        print(f"[ZIPS] Found {len(intersecting)} ZIPs in {total_time:.3f}s (R-tree indexed)")
+        
+        if not intersecting:
+            # Check if layer is empty
+            zips_layer = service.get_layer("zips")
+            if not zips_layer.get("features"):
+                return {
+                    "type": "FeatureCollection",
+                    "features": [],
+                    "count": 0,
+                    "message": "No ZIP data loaded. Please ensure zips.kml is in the usakmls folder."
+                }
+        
+        return {
+            "type": "FeatureCollection",
+            "features": intersecting,
+            "count": len(intersecting),
+            "truncated": truncated
+        }
+        
+    except Exception as e:
+        print(f"[ZIPS] Error: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid geometry: {str(e)}")

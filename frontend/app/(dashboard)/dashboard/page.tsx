@@ -7,11 +7,10 @@ import { InteractiveMap } from '@/components/map/interactive-map'
 import { DiscoveryCard } from '@/components/map/discovery-card'
 import { PropertyPreviewCard } from '@/components/map/property-preview-card'
 import { DiscoveryPanel } from '@/components/features/discovery/DiscoveryPanel'
-import { BoundaryLayerSelector } from '@/components/features/boundaries'
 import { useDiscoveryStream } from '@/lib/hooks/use-discovery-stream'
 import { SearchParcel, ViewportBounds } from '@/lib/api/search'
 import { BoundaryLayerResponse, boundariesApi } from '@/lib/api/boundaries'
-import { discoveryApi, DiscoveryParcel } from '@/lib/api/discovery'
+import { discoveryApi, DiscoveryParcel, PlaceWithParcel } from '@/lib/api/discovery'
 import { ArcGISParcel } from '@/lib/api/arcgis-parcels'
 
 type ClickMode = 'property' | 'discovery'
@@ -88,6 +87,17 @@ export default function DashboardPage() {
     type: 'zip' | 'county'
   } | null>(null)
   const [isLoadingDiscoveryBoundary, setIsLoadingDiscoveryBoundary] = useState(false)
+  
+  // New Places-based discovery state
+  const [showZipsInUrban, setShowZipsInUrban] = useState(false)
+  const [selectedZip, setSelectedZip] = useState<{
+    id: string
+    code: string
+    name: string
+    geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
+  } | null>(null)
+  const [discoveredPlaces, setDiscoveredPlaces] = useState<PlaceWithParcel[]>([])
+  const [selectedPlaces, setSelectedPlaces] = useState<PlaceWithParcel[]>([])
 
   // Clear clicked point when mode changes
   const handleMapClickMode = useCallback((mode: 'zip' | 'county' | 'pin' | 'urban' | null) => {
@@ -103,17 +113,28 @@ export default function DashboardPage() {
     mutationFn: discoveryApi.queryParcels,
     onSuccess: (data) => {
       if (data.success) {
-        // Convert to ArcGISParcel format
-        const parcels: ArcGISParcel[] = data.parcels.map(p => ({
-          id: p.id,
-          address: p.address,
-          acreage: p.acreage,
-          apn: p.apn,
-          regridId: p.regrid_id,
-          geometry: p.geometry,
-          centroid: p.centroid,
-          selected: false,
-        }))
+        // Convert to ArcGISParcel format, filtering out invalid parcels
+        const parcels: ArcGISParcel[] = data.parcels
+          .filter(p => {
+            // Validate centroid has valid numeric coordinates
+            const lat = p.centroid?.lat
+            const lng = p.centroid?.lng
+            return (
+              typeof lat === 'number' && !isNaN(lat) &&
+              typeof lng === 'number' && !isNaN(lng)
+            )
+          })
+          .map(p => ({
+            id: p.id,
+            address: p.address,
+            acreage: p.acreage,
+            apn: p.apn,
+            regridId: p.regrid_id,
+            geometry: p.geometry,
+            centroid: p.centroid,
+            selected: false,
+          }))
+        console.log(`📊 Loaded ${parcels.length} valid parcels (filtered from ${data.parcels.length})`)
         setDiscoveryParcels(parcels)
         setSelectedDiscoveryParcels([])
       } else {
@@ -188,6 +209,71 @@ export default function DashboardPage() {
   const handleClearParcels = useCallback(() => {
     setDiscoveryParcels([])
     setSelectedDiscoveryParcels([])
+  }, [])
+  
+  // Places discovery mutation (Google Places -> Regrid Tiles)
+  const placesDiscoveryMutation = useMutation({
+    mutationFn: discoveryApi.discoverPlaces,
+    onSuccess: (data) => {
+      if (data.success) {
+        console.log(`📍 Discovered ${data.total_places} places, ${data.places_with_parcels} with parcels`)
+        setDiscoveredPlaces(data.places)
+        setSelectedPlaces([])
+      } else {
+        console.error('Places discovery failed:', data.error)
+        alert(data.error || 'Failed to discover places')
+      }
+    },
+    onError: (error: any) => {
+      console.error('Places discovery error:', error)
+      alert('Failed to discover places. Please try again.')
+    },
+  })
+  
+  // Handle places discovery
+  const handleDiscoverPlaces = useCallback((
+    geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon,
+    propertyType: string
+  ) => {
+    placesDiscoveryMutation.mutate({
+      geometry,
+      property_type: propertyType,
+      max_results: 60,
+    })
+  }, [placesDiscoveryMutation])
+  
+  // Handle place selection
+  const handlePlaceSelect = useCallback((place: PlaceWithParcel, selected: boolean) => {
+    if (selected) {
+      setSelectedPlaces(prev => [...prev, place])
+    } else {
+      setSelectedPlaces(prev => prev.filter(p => p.place_id !== place.place_id))
+    }
+  }, [])
+  
+  // Handle select/deselect all places
+  const handleSelectAllPlaces = useCallback(() => {
+    setSelectedPlaces([...discoveredPlaces])
+  }, [discoveredPlaces])
+  
+  const handleDeselectAllPlaces = useCallback(() => {
+    setSelectedPlaces([])
+  }, [])
+  
+  // Handle process selected places
+  const handleProcessPlaces = useCallback(async (places: PlaceWithParcel[]) => {
+    console.log('Processing places:', places)
+    // TODO: Implement LLM enrichment for selected places
+    alert(`Processing ${places.length} places for enrichment. This feature is coming soon!`)
+  }, [])
+  
+  // Handle discovery clear/reset
+  const handleDiscoveryClear = useCallback(() => {
+    setDiscoveredPlaces([])
+    setSelectedPlaces([])
+    setSelectedZip(null)
+    setShowZipsInUrban(false)
+    setDrawnPolygon(null)
   }, [])
   
   // Handle process selected parcels
@@ -274,23 +360,30 @@ export default function DashboardPage() {
   
   // Convert discovery parcels to SearchParcel format for map display
   const discoverySearchResults: SearchParcel[] = useMemo(() => {
-    return discoveryParcels.map(p => ({
-      parcel_id: p.id,
-      address: p.address,
-      lat: p.centroid.lat,
-      lng: p.centroid.lng,
-      area_acres: p.acreage,
-      area_sqft: p.acreage * 43560, // Convert acres to sqft
-      owner: null,
-      land_use: null,
-      zoning: null,
-      year_built: null,
-      lbcs_activity: null,
-      lbcs_activity_desc: null,
-      brand_name: null,
-      place_id: null,
-      polygon_geojson: p.geometry as GeoJSON.Polygon,
-    }))
+    return discoveryParcels
+      .filter(p => {
+        // Double-check valid coordinates before map display
+        const lat = p.centroid?.lat
+        const lng = p.centroid?.lng
+        return typeof lat === 'number' && !isNaN(lat) && typeof lng === 'number' && !isNaN(lng)
+      })
+      .map(p => ({
+        parcel_id: p.id,
+        address: p.address,
+        lat: p.centroid.lat,
+        lng: p.centroid.lng,
+        area_acres: p.acreage,
+        area_sqft: p.acreage * 43560, // Convert acres to sqft
+        owner: null,
+        land_use: null,
+        zoning: null,
+        year_built: null,
+        lbcs_activity: null,
+        lbcs_activity_desc: null,
+        brand_name: null,
+        place_id: null,
+        polygon_geojson: p.geometry as GeoJSON.Polygon,
+      }))
   }, [discoveryParcels])
   
   // Combined search results for map display
@@ -535,38 +628,59 @@ export default function DashboardPage() {
             showUrbanOverlay={showUrbanOverlay}
             selectedUrbanArea={selectedUrbanArea}
             onUrbanAreaSelect={setSelectedUrbanArea}
+            showZipsInUrban={showZipsInUrban}
+            selectedZip={selectedZip}
+            onZipSelect={setSelectedZip}
+            discoveredPlaces={discoveredPlaces.map(p => ({
+              place_id: p.place_id,
+              name: p.name,
+              lat: p.lat,
+              lng: p.lng,
+              address: p.address || undefined,
+              parcel_geometry: p.parcel_geometry || undefined,
+              parcel_address: p.parcel_address || undefined,
+              parcel_acreage: p.parcel_acreage || undefined,
+            }))}
+            selectedPlaceIds={selectedPlaces.map(p => p.place_id)}
+            onPlaceClick={(placeId) => {
+              const place = discoveredPlaces.find(p => p.place_id === placeId)
+              if (place) {
+                const isSelected = selectedPlaces.some(p => p.place_id === placeId)
+                handlePlaceSelect(place, !isSelected)
+              }
+            }}
           />
         )}
 
         {/* Discovery Panel */}
         <DiscoveryPanel
-          onDrawPolygon={handleDrawPolygon}
-          onCancelDrawing={handleCancelDrawing}
-          onClearDrawnPolygon={() => setDrawnPolygon(null)}
-          onMapClickMode={handleMapClickMode}
-          onBoundarySelect={(boundary, name, type) => {
-            setSelectedBoundary({ boundary, name, type })
-            if (!boundary) {
-              setDiscoveryBoundary(null)
-            }
-          }}
-          isDrawing={isDrawingPolygon}
-          drawnPolygon={drawnPolygon}
-          clickedPoint={searchClickedPoint}
-          selectedBoundary={discoveryBoundary}
-          isLoadingBoundary={isLoadingDiscoveryBoundary}
+          // Urban area
           onShowUrbanOverlay={setShowUrbanOverlay}
           onUrbanAreaSelect={setSelectedUrbanArea}
           selectedUrbanArea={selectedUrbanArea}
-          loadedParcels={discoveryParcels}
-          isLoadingParcels={discoveryMutation.isPending}
-          onRequestParcels={handleRequestParcels}
-          selectedParcels={selectedDiscoveryParcels}
-          onParcelSelect={handleParcelSelect}
-          onSelectAll={handleSelectAllParcels}
-          onDeselectAll={handleDeselectAllParcels}
-          onProcessSelected={handleProcessParcels}
-          onClearParcels={handleClearParcels}
+          // ZIP selection
+          onShowZipsInUrban={setShowZipsInUrban}
+          onZipSelect={setSelectedZip}
+          selectedZip={selectedZip}
+          // Drawing
+          onDrawPolygon={handleDrawPolygon}
+          onCancelDrawing={handleCancelDrawing}
+          onClearDrawnPolygon={() => setDrawnPolygon(null)}
+          isDrawing={isDrawingPolygon}
+          drawnPolygon={drawnPolygon}
+          // Places discovery
+          onDiscoverPlaces={handleDiscoverPlaces}
+          isDiscovering={placesDiscoveryMutation.isPending}
+          discoveredPlaces={discoveredPlaces}
+          // Selection
+          selectedPlaces={selectedPlaces}
+          onPlaceSelect={handlePlaceSelect}
+          onSelectAll={handleSelectAllPlaces}
+          onDeselectAll={handleDeselectAllPlaces}
+          // Processing
+          onProcessSelected={handleProcessPlaces}
+          // Clear
+          onClear={handleDiscoveryClear}
         />
 
         {/* Property Preview or Discovery Card */}
@@ -615,11 +729,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Boundary Layer Selector */}
-        <BoundaryLayerSelector
-          viewport={searchViewport}
-          onLayerData={handleBoundaryLayerData}
-        />
       </div>
     </div>
   )

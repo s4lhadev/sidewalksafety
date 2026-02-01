@@ -156,4 +156,20 @@ export const boundariesApi = {
     })
     return data
   },
+
+  /**
+   * Get all ZIP codes that intersect with a given geometry
+   * Used to show ZIPs within a selected urban area
+   */
+  getZipsInArea: async (
+    geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon,
+    limit: number = 500
+  ): Promise<BoundaryLayerResponse & { count: number; message?: string }> => {
+    const { data } = await apiClient.post<BoundaryLayerResponse & { count: number; message?: string }>(
+      '/boundaries/zips-in-area',
+      geometry,
+      { params: { limit }, timeout: 60000 } // 60s timeout for large areas
+    )
+    return data
+  },
 }

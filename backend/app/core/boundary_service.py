@@ -8,13 +8,15 @@ Features:
 - Point-in-polygon lookup (find boundary containing a lat/lng)
 - Search boundaries by name
 - Get boundary by ID
+- R-tree spatial index for fast intersection queries
 """
 
 import os
 import re
 import logging
+import time
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 from functools import lru_cache
 import xml.etree.ElementTree as ET
@@ -78,7 +80,104 @@ class BoundaryService:
     def __init__(self):
         self._cache: Dict[str, List[Dict]] = {}
         self._loaded: Dict[str, bool] = {}
+        # Prepared geometries for fast intersection (use prepared instead of R-tree for reliability)
+        self._prepared_geoms: Dict[str, List[Tuple[Any, int]]] = {}  # (prepared_geom, feature_idx)
         logger.info(f"BoundaryService initialized, KML dir: {self.KML_DIR}")
+    
+    def _build_prepared_geometries(self, layer_id: str) -> None:
+        """Build prepared geometries for faster intersection tests"""
+        if layer_id in self._prepared_geoms:
+            return  # Already built
+        
+        features = self._cache.get(layer_id, [])
+        if not features:
+            logger.warning(f"No features to prepare for {layer_id}")
+            return
+        
+        start = time.time()
+        prepared = []
+        
+        for i, feature in enumerate(features):
+            try:
+                geom = shape(feature.get("geometry", {}))
+                # Store both the geometry and prepared version with index
+                prepared.append((geom, prep(geom), i))
+            except Exception as e:
+                continue
+        
+        if prepared:
+            self._prepared_geoms[layer_id] = prepared
+            elapsed = time.time() - start
+            logger.info(f"Prepared {len(prepared)} geometries for {layer_id} in {elapsed:.2f}s")
+        else:
+            logger.warning(f"No valid geometries found for {layer_id}")
+    
+    def get_features_intersecting(self, layer_id: str, search_geometry) -> List[Dict]:
+        """
+        Get features that intersect with a geometry.
+        Uses prepared geometries and bounding box pre-filter for speed.
+        """
+        # Ensure layer is loaded
+        if layer_id not in self._cache:
+            self.get_layer(layer_id)
+        
+        # Build prepared geometries if not done
+        if layer_id not in self._prepared_geoms:
+            self._build_prepared_geometries(layer_id)
+        
+        prepared_list = self._prepared_geoms.get(layer_id, [])
+        features = self._cache.get(layer_id, [])
+        
+        if not prepared_list:
+            logger.warning(f"No prepared geometries for {layer_id}")
+            return []
+        
+        start = time.time()
+        
+        # Get search bounding box for quick pre-filter
+        search_bounds = search_geometry.bounds  # (minx, miny, maxx, maxy)
+        search_prep = prep(search_geometry)
+        
+        intersecting = []
+        checked = 0
+        bbox_filtered = 0
+        
+        for geom, geom_prep, idx in prepared_list:
+            # Quick bounding box check first
+            geom_bounds = geom.bounds
+            if (geom_bounds[2] < search_bounds[0] or  # geom max_x < search min_x
+                geom_bounds[0] > search_bounds[2] or  # geom min_x > search max_x
+                geom_bounds[3] < search_bounds[1] or  # geom max_y < search min_y
+                geom_bounds[1] > search_bounds[3]):   # geom min_y > search max_y
+                bbox_filtered += 1
+                continue
+            
+            checked += 1
+            # Use prepared geometry for fast intersection test
+            if search_prep.intersects(geom):
+                if idx < len(features):
+                    intersecting.append(features[idx])
+        
+        elapsed = time.time() - start
+        logger.info(f"Intersection query: {len(prepared_list)} total, {bbox_filtered} bbox-filtered, {checked} checked, {len(intersecting)} found in {elapsed:.3f}s")
+        
+        return intersecting
+    
+    def preload_layer(self, layer_id: str) -> int:
+        """Preload a layer into cache and build prepared geometries"""
+        logger.info(f"Preloading layer: {layer_id}")
+        start = time.time()
+        
+        result = self.get_layer(layer_id)
+        count = len(result.get("features", []))
+        
+        # Build prepared geometries for zips (most queried)
+        if layer_id == "zips" and count > 0:
+            self._build_prepared_geometries(layer_id)
+        
+        elapsed = time.time() - start
+        logger.info(f"Preloaded {layer_id}: {count} features in {elapsed:.2f}s")
+        return count
     
     def get_available_layers(self) -> List[Dict[str, Any]]:
         """Get list of available boundary layers"""

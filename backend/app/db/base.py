@@ -35,23 +35,24 @@ if is_supabase_pooler:
     
     if is_transaction_mode:
         pool_config.update({
-            "pool_size": 5,
-            "max_overflow": 2,
+            "pool_size": 8,
+            "max_overflow": 4,
             "pool_recycle": 300,
-            "pool_timeout": 20,
+            "pool_timeout": 30,
         })
     else:
         pool_config.update({
-            "pool_size": 3,
-            "max_overflow": 2,
+            "pool_size": 6,
+            "max_overflow": 4,
             "pool_recycle": 600,
-            "pool_timeout": 20,
+            "pool_timeout": 30,
         })
 else:
     pool_config.update({
         "pool_size": 10,
         "max_overflow": 5,
         "pool_recycle": 3600,
+        "pool_timeout": 30,
     })
 
 engine = create_engine(database_url, **pool_config)
@@ -74,3 +75,12 @@ def get_db():
         raise
     finally:
         db.close()
+
+
+def close_db_pool():
+    """Cierra el pool de conexiones correctamente."""
+    try:
+        engine.dispose(close=True)
+        print("[DB] Pool de conexiones cerrado correctamente")
+    except Exception as e:
+        print(f"[DB] Error al cerrar el pool: {e}")

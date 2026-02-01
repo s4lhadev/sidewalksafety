@@ -1,15 +1,53 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
+import logging
+
 from app.core.config import settings
 from app.api.v1.router import api_router
+from app.db.base import close_db_pool
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events"""
+    # Startup: Preload heavy data
+    logger.info("Starting up - preloading boundary data...")
+    try:
+        from app.core.boundary_service import get_boundary_service
+        service = get_boundary_service()
+        
+        # Preload ZIPs with spatial index (biggest layer, most queried)
+        zip_count = service.preload_layer("zips")
+        logger.info(f"Preloaded {zip_count} ZIP codes with spatial index")
+        
+        # Preload urban areas (needed for discovery)
+        urban_count = service.preload_layer("urban_areas")
+        logger.info(f"Preloaded {urban_count} urban areas")
+        
+    except Exception as e:
+        logger.warning(f"Failed to preload boundary data: {e}")
+    
+    yield  # App runs here
+    
+    # Shutdown
+    logger.info("Shutting down...")
+    try:
+        close_db_pool()
+    except Exception as e:
+        logger.warning(f"Error al cerrar el pool de conexiones: {e}")
+
 
 app = FastAPI(
     title="WorkSight API",
     description="Property discovery, analysis, and lead enrichment API",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 

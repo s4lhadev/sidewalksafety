@@ -20,3 +20,6 @@ data/boundaries/*.kml
 data/boundaries/*.geojson
 data/boundaries/*.json
 !data/boundaries/.gitkeep
+
+# Large KML files (upload separately to VM)
+usakmls/
