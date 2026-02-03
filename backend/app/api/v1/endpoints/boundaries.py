@@ -15,7 +15,7 @@ class BoundaryLayer(BaseModel):
     id: str
     name: str
     available: bool
-    size_mb: float
+    count: int = 0
     loaded: bool
 
 

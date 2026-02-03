@@ -10,7 +10,10 @@ This service:
 4. Returns image ready for VLM analysis
 """
 
-import contextily as ctx
+try:
+    import contextily as ctx
+except ImportError:
+    ctx = None  # Optional: only needed for ESRI fallback imagery
 from shapely.geometry import Polygon, MultiPolygon
 from PIL import Image, ImageDraw
 import numpy as np
@@ -31,7 +34,7 @@ class PolygonImageryService:
     """Service for fetching high-resolution satellite imagery of property polygons."""
     
     # ESRI satellite tiles - FREE and legitimate
-    ESRI_TILES = ctx.providers.Esri.WorldImagery
+    ESRI_TILES = ctx.providers.Esri.WorldImagery if ctx else None
     
     # Bing tiles as fallback
     BING_TILES = "https://ecn.t0.tiles.virtualearth.net/tiles/a{q}.jpeg?g=14038"
