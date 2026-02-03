@@ -706,7 +706,7 @@ export function SearchPanel({
                         )}
                         {!isDrawing && (
                           <p className="text-[10px] text-stone-400 text-center">
-                            Click "Start Drawing" then click points on the map to create your search area
+                            Click &quot;Start Drawing&quot; then click points on the map to create your search area
                           </p>
                         )}
                         <p className="text-[10px] text-amber-600 text-center">

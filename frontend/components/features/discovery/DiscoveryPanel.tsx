@@ -480,7 +480,7 @@ export function DiscoveryPanel({
                     }}
                   />
                   <p className="text-[10px] text-stone-400">
-                    Describe in natural language. We'll find matching businesses and their parcels.
+                    Describe in natural language. We&apos;ll find matching businesses and their parcels.
                   </p>
                 </div>
 
@@ -529,7 +529,7 @@ export function DiscoveryPanel({
                 {/* Search context */}
                 <div className="p-2 bg-stone-50 rounded-md border border-stone-200">
                   <p className="text-xs text-stone-600 truncate">
-                    "{propertyType}" in {areaChoice === 'entire_zip' ? `ZIP ${selectedZip?.code}` : 'drawn area'}
+                    &quot;{propertyType}&quot; in {areaChoice === 'entire_zip' ? `ZIP ${selectedZip?.code}` : 'drawn area'}
                   </p>
                 </div>
 
