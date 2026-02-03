@@ -189,25 +189,25 @@ export function parseParcelFeatures(
   
   for (const feature of features) {
     // Extract properties
-    const address = feature.getProperty('Address') || 
+    const address = String(feature.getProperty('Address') || 
                    feature.getProperty('address') || 
-                   'Unknown Address'
+                   'Unknown Address')
     
     const acreage = parseFloat(
-      feature.getProperty('Acreage') || 
+      String(feature.getProperty('Acreage') || 
       feature.getProperty('acreage') || 
       feature.getProperty('ll_gisacre') ||
-      '0'
+      '0')
     )
     
-    const apn = feature.getProperty('APN') || 
+    const apn = String(feature.getProperty('APN') || 
                feature.getProperty('apn') || 
                feature.getProperty('parcelnumb') ||
-               ''
+               '')
     
-    const regridId = feature.getProperty('Regrid ID') || 
+    const regridId = String(feature.getProperty('Regrid ID') || 
                     feature.getProperty('ll_uuid') ||
-                    ''
+                    '')
     
     // Use APN or Regrid ID as unique identifier
     const id = apn || regridId || `${address}-${acreage}`

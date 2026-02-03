@@ -3081,7 +3081,7 @@ function KMLBoundaryLayerWrapper({
     // If no data or no layer, clear existing
     if (!data || !layerId || !map || featureCount === 0) {
       if (kmlDataStorage.currentLayerId !== '') {
-        kmlDataStorage.clear(map)
+        kmlDataStorage.clear(map ?? undefined)
       }
       return
     }
@@ -3290,29 +3290,31 @@ function SearchResultsLayer({
           const geomType = result.polygon_geojson.type
           
           // Collect all polygon paths (each polygon may have multiple rings for holes)
-          let allPolygonPaths: google.maps.LatLngLiteral[][] = []
+          let allPolygonPaths: google.maps.LatLngLiteral[][][] = []
+          
+          const coords = result.polygon_geojson.coordinates as any
           
           if (geomType === 'Polygon') {
             // Polygon: coordinates is array of rings [exterior, hole1, hole2, ...]
             // All rings go into ONE Google Maps Polygon (it handles holes automatically)
-            const paths = result.polygon_geojson.coordinates.map((ring: number[][]) =>
+            const paths = coords.map((ring: number[][]) =>
               ring.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }))
             )
             allPolygonPaths = [paths]  // Single polygon with all its rings
           } else if (geomType === 'MultiPolygon') {
             // MultiPolygon: array of Polygon structures
             // Each polygon becomes a separate Google Maps Polygon
-            allPolygonPaths = result.polygon_geojson.coordinates.map((poly: number[][][]) =>
+            allPolygonPaths = coords.map((poly: number[][][]) =>
               poly.map((ring: number[][]) =>
                 ring.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }))
               )
             )
           } else {
             // Fallback: treat as simple polygon
-            const ring = result.polygon_geojson.coordinates[0]
+            const ring = coords[0]
             if (ring) {
-              const coords = ring.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }))
-              allPolygonPaths = [[coords]]
+              const ringCoords = ring.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }))
+              allPolygonPaths = [[ringCoords]]
             }
           }
           

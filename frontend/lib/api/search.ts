@@ -27,7 +27,7 @@ export type SearchType = 'pin' | 'polygon' | 'zip' | 'nlp' | 'category' | 'brand
 export interface SearchRequest {
   search_type: SearchType
   point?: PointLocation
-  polygon_geojson?: GeoJSON.Polygon
+  polygon_geojson?: GeoJSON.Polygon | GeoJSON.MultiPolygon
   zip_code?: string
   viewport?: ViewportBounds
   state_code?: string

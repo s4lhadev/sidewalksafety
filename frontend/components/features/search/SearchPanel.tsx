@@ -208,7 +208,7 @@ export function SearchPanel({
         setPinParcelData(data)
         // Update polygon on map if available
         if (data.polygon_geojson) {
-          onPinParcelPolygon?.(data.polygon_geojson)
+          onPinParcelPolygon?.(data.polygon_geojson as GeoJSON.Polygon | GeoJSON.MultiPolygon)
         } else {
           onPinParcelPolygon?.(null)
         }
@@ -723,10 +723,7 @@ export function SearchPanel({
                           <button
                             onClick={() => {
                               onClearDrawnPolygon?.()
-                              if (step === 'type') {
-                                setStep('area')
-                                setSelectedCategory(null)
-                              }
+                              setSelectedCategory(null)
                             }}
                             className="p-1 hover:bg-emerald-100 rounded transition-colors"
                             title="Clear polygon (ESC)"
