@@ -2,10 +2,11 @@
 
 ## Prerequisites
 
-1. **GCP VM (e2-medium or higher recommended)**
+1. **GCP VM (e2-small minimum, e2-medium recommended)**
    - Ubuntu 22.04 LTS
-   - At least 2GB RAM
+   - **Minimum 2GB RAM** (e2-small) - e2-micro WILL cause issues
    - External IP address
+   - Swap is auto-created on first deploy (1GB)
 
 2. **Domain** configured with DNS A records:
    - `worksight.app` → VM External IP

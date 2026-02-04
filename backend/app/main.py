@@ -15,23 +15,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events"""
-    # Startup: Preload heavy data
-    logger.info("Starting up - preloading boundary data...")
-    try:
-        from app.core.boundary_service import get_boundary_service
-        service = get_boundary_service()
-        
-        # Preload ZIPs with spatial index (biggest layer, most queried)
-        zip_count = service.preload_layer("zips")
-        logger.info(f"Preloaded {zip_count} ZIP codes with spatial index")
-        
-        # Preload urban areas (needed for discovery)
-        urban_count = service.preload_layer("urban_areas")
-        logger.info(f"Preloaded {urban_count} urban areas")
-        
-    except Exception as e:
-        logger.warning(f"Failed to preload boundary data: {e}")
+    """Startup and shutdown events - keep lightweight to avoid memory issues on small VMs"""
+    logger.info("WorkSight API starting up...")
+    # NO DB work at startup - PostGIS handles everything on-demand
     
     yield  # App runs here
     
@@ -40,7 +26,7 @@ async def lifespan(app: FastAPI):
     try:
         close_db_pool()
     except Exception as e:
-        logger.warning(f"Error al cerrar el pool de conexiones: {e}")
+        logger.warning(f"Error closing DB pool: {e}")
 
 
 app = FastAPI(
