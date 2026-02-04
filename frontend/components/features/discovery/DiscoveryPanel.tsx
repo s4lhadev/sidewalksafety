@@ -7,7 +7,7 @@ import {
   ArrowRight, Building2, Star, Phone, Globe, Hash
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { PlaceWithParcel } from '@/lib/api/discovery'
+import { PlaceWithParcel, ProcessingProgress, ProcessedPlace } from '@/lib/api/discovery'
 
 // Urban area info type
 interface UrbanAreaInfo {
@@ -55,6 +55,9 @@ interface DiscoveryPanelProps {
   
   // Processing
   onProcessSelected: (places: PlaceWithParcel[]) => void
+  isProcessing?: boolean
+  processingProgress?: ProcessingProgress | null
+  processedResults?: ProcessedPlace[]
   
   // Clear/Reset
   onClear?: () => void
@@ -78,6 +81,9 @@ export function DiscoveryPanel({
   onDiscoverPlaces,
   isDiscovering,
   discoveredPlaces,
+  isProcessing = false,
+  processingProgress,
+  processedResults = [],
   selectedPlaces,
   onPlaceSelect,
   onSelectAll,
@@ -580,30 +586,89 @@ export function DiscoveryPanel({
                       })}
                     </div>
 
-                    {/* Selection summary & process button */}
-                    <div className="pt-2 border-t border-stone-100 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-stone-600">
-                          {selectedPlaces.length} selected
-                        </span>
-                        <span className="text-stone-400">
-                          {selectedPlaces.filter(p => p.parcel_id).length} with parcels
-                        </span>
-                      </div>
-                      <button
-                        onClick={handleProcess}
-                        disabled={selectedPlaces.length === 0}
-                        className={cn(
-                          "w-full py-2.5 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors",
-                          selectedPlaces.length > 0
-                            ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                            : "bg-stone-200 text-stone-400 cursor-not-allowed"
+                    {/* Processing progress */}
+                    {isProcessing && processingProgress && (
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-md space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />
+                          <span className="text-xs font-medium text-blue-700">
+                            Processing...
+                          </span>
+                        </div>
+                        <p className="text-xs text-blue-600">{processingProgress.message}</p>
+                        {processingProgress.current && processingProgress.total && (
+                          <div className="space-y-1">
+                            <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-blue-600 transition-all duration-300"
+                                style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }}
+                              />
+                            </div>
+                            <p className="text-[10px] text-blue-500 text-center">
+                              {processingProgress.current} / {processingProgress.total}
+                            </p>
+                          </div>
                         )}
-                      >
-                        <ArrowRight className="h-4 w-4" />
-                        Process Selected ({selectedPlaces.length})
-                      </button>
-                    </div>
+                      </div>
+                    )}
+
+                    {/* Processed results */}
+                    {!isProcessing && processedResults.length > 0 && (
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md space-y-2">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          <span className="text-xs font-medium text-emerald-700">
+                            Processing Complete
+                          </span>
+                        </div>
+                        <div className="text-xs text-emerald-600 space-y-1">
+                          <p>✓ {processedResults.length} places processed</p>
+                          <p>✓ {processedResults.filter(r => r.contact).length} contacts found</p>
+                        </div>
+                        <div className="max-h-32 overflow-y-auto space-y-1 mt-2">
+                          {processedResults.filter(r => r.contact).map((result) => (
+                            <div key={result.place_id} className="p-2 bg-white rounded border border-emerald-100 text-xs">
+                              <p className="font-medium text-stone-700 truncate">{result.name}</p>
+                              {result.contact?.phone && (
+                                <p className="text-emerald-600 flex items-center gap-1">
+                                  <Phone className="h-3 w-3" /> {result.contact.phone}
+                                </p>
+                              )}
+                              {result.contact?.email && (
+                                <p className="text-emerald-600 truncate">{result.contact.email}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Selection summary & process button */}
+                    {!isProcessing && processedResults.length === 0 && (
+                      <div className="pt-2 border-t border-stone-100 space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-stone-600">
+                            {selectedPlaces.length} selected
+                          </span>
+                          <span className="text-stone-400">
+                            {selectedPlaces.filter(p => p.parcel_id).length} with parcels
+                          </span>
+                        </div>
+                        <button
+                          onClick={handleProcess}
+                          disabled={selectedPlaces.length === 0}
+                          className={cn(
+                            "w-full py-2.5 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors",
+                            selectedPlaces.length > 0
+                              ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                              : "bg-stone-200 text-stone-400 cursor-not-allowed"
+                          )}
+                        >
+                          <ArrowRight className="h-4 w-4" />
+                          Process Selected ({selectedPlaces.length})
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
 

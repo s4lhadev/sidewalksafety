@@ -8,17 +8,35 @@ Two discovery modes:
 Tiles are free (200k/month), only record queries count against Regrid quota (2k/month).
 """
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import json
+import uuid
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, AsyncGenerator
+from sqlalchemy.orm import Session
+from geoalchemy2.shape import from_shape
+from shapely.geometry import Point
 import logging
 
 from app.core.arcgis_parcel_service import get_parcel_discovery_service, DiscoveryParcel
 from app.core.google_places_service import get_google_places_service, PlaceResult
+from app.core.llm_enrichment_service import llm_enrichment_service
+from app.db.base import SessionLocal
+from app.models.property import Property
+from app.core.dependencies import get_current_user, get_db
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def sse_message(data: dict) -> str:
+    """Format data as SSE message"""
+    return f"data: {json.dumps(data)}\n\n"
 
 
 class DiscoveryQueryRequest(BaseModel):
@@ -271,13 +289,52 @@ async def discover_places(request: PlacesDiscoveryRequest):
         )
 
 
+class ProcessPlacesRequest(BaseModel):
+    """Request to process selected places with parcels"""
+    places: List[PlaceWithParcel]
+
+
+class EnrichedContact(BaseModel):
+    """Enriched contact information"""
+    name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    website: Optional[str] = None
+    confidence: float = 0.0
+
+
+class ProcessedPlace(BaseModel):
+    """A processed place with enrichment results"""
+    place_id: str
+    name: str
+    address: str
+    property_id: Optional[str] = None
+    contact: Optional[EnrichedContact] = None
+    enrichment_status: str = "pending"  # pending, success, not_found, error
+    enrichment_steps: Optional[List[str]] = None
+    error: Optional[str] = None
+
+
+class ProcessPlacesResponse(BaseModel):
+    """Response from places processing"""
+    success: bool
+    message: str
+    processed: List[ProcessedPlace]
+    total: int
+    with_contacts: int
+    
+
 class ProcessParcelsRequest(BaseModel):
-    """Request to process selected parcels"""
+    """Request to process selected parcels (legacy)"""
     parcels: List[ParcelResponse]
 
 
 class ProcessParcelsResponse(BaseModel):
-    """Response from parcel processing"""
+    """Response from parcel processing (legacy)"""
     success: bool
     message: str
     job_id: Optional[str] = None
@@ -286,36 +343,362 @@ class ProcessParcelsResponse(BaseModel):
 @router.post("/process", response_model=ProcessParcelsResponse)
 async def process_parcels(request: ProcessParcelsRequest):
     """
-    Process selected parcels for lead enrichment.
-    
-    This endpoint queues the parcels for LLM enrichment to find contact information.
-    
-    Args:
-        parcels: List of parcels to process
+    Process selected parcels for lead enrichment (legacy endpoint).
+    Use /process/places for the new discovery flow.
     """
-    try:
-        logger.info(f"📋 Processing {len(request.parcels)} parcels for enrichment")
+    logger.info(f"📋 Legacy process endpoint called with {len(request.parcels)} parcels")
+    return ProcessParcelsResponse(
+        success=True,
+        message=f"Use /discover/process/places for processing. Received {len(request.parcels)} parcels.",
+        job_id="use_new_endpoint",
+    )
+
+
+@router.post("/process/places/stream")
+async def process_places_stream(
+    request: ProcessPlacesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Process selected places for LLM enrichment with SSE streaming.
+    
+    For each place:
+    1. Create or find property record
+    2. Run LLM enrichment to find decision-maker contact
+    3. Stream progress updates
+    
+    Returns SSE stream with progress and results.
+    """
+    if not request.places:
+        raise HTTPException(status_code=400, detail="No places provided")
+    
+    async def generate() -> AsyncGenerator[str, None]:
+        processed: List[ProcessedPlace] = []
+        with_contacts = 0
         
-        if not request.parcels:
-            raise HTTPException(status_code=400, detail="No parcels provided")
+        # Start message
+        yield sse_message({
+            "type": "start",
+            "message": f"Processing {len(request.places)} places",
+            "total": len(request.places),
+        })
         
-        # TODO: Queue parcels for LLM enrichment
-        # For now, return a placeholder response
+        for idx, place in enumerate(request.places):
+            place_name = place.name[:30] + "..." if len(place.name) > 30 else place.name
+            
+            # Progress update
+            yield sse_message({
+                "type": "processing",
+                "message": f"Processing: {place_name}",
+                "current": idx + 1,
+                "total": len(request.places),
+                "place_id": place.place_id,
+            })
+            await asyncio.sleep(0.05)
+            
+            try:
+                # Step 1: Create or find property
+                property_id = None
+                prop = None
+                
+                # Check if property already exists by address
+                existing = db.query(Property).filter(
+                    Property.user_id == current_user.id,
+                    Property.address == place.address,
+                ).first()
+                
+                if existing:
+                    prop = existing
+                    property_id = str(existing.id)
+                    yield sse_message({
+                        "type": "property_found",
+                        "message": f"Found existing property",
+                        "property_id": property_id,
+                        "place_id": place.place_id,
+                    })
+                else:
+                    # Create new property from place data
+                    new_prop = Property(
+                        id=uuid.uuid4(),
+                        user_id=current_user.id,
+                        centroid=from_shape(Point(place.lng, place.lat), srid=4326),
+                        address=place.address,
+                        regrid_id=place.parcel_id,
+                        regrid_apn=place.parcel_apn,
+                        regrid_owner=place.parcel_owner,
+                        regrid_area_acres=place.parcel_acreage,
+                        discovery_source="places_discovery",
+                        status="discovered",
+                    )
+                    
+                    # Add polygon if available
+                    if place.parcel_geometry:
+                        from shapely.geometry import shape
+                        try:
+                            parcel_shape = shape(place.parcel_geometry)
+                            new_prop.regrid_polygon = from_shape(parcel_shape, srid=4326)
+                        except Exception as e:
+                            logger.warning(f"Could not parse parcel geometry: {e}")
+                    
+                    db.add(new_prop)
+                    db.commit()
+                    db.refresh(new_prop)
+                    prop = new_prop
+                    property_id = str(new_prop.id)
+                    
+                    yield sse_message({
+                        "type": "property_created",
+                        "message": f"Created property",
+                        "property_id": property_id,
+                        "place_id": place.place_id,
+                    })
+                
+                await asyncio.sleep(0.05)
+                
+                # Step 2: LLM Enrichment
+                yield sse_message({
+                    "type": "enriching",
+                    "message": f"Finding contact for: {place_name}",
+                    "place_id": place.place_id,
+                })
+                
+                # Determine property type from Google Places types
+                property_type = "commercial"
+                if place.types:
+                    if any(t in place.types for t in ["restaurant", "food", "cafe", "bakery"]):
+                        property_type = "restaurant"
+                    elif any(t in place.types for t in ["store", "shopping", "retail"]):
+                        property_type = "retail"
+                    elif any(t in place.types for t in ["lodging", "hotel", "motel"]):
+                        property_type = "lodging"
+                    elif any(t in place.types for t in ["car_repair", "car_dealer", "gas_station"]):
+                        property_type = "automotive"
+                    elif any(t in place.types for t in ["gym", "fitness"]):
+                        property_type = "fitness"
+                    elif any(t in place.types for t in ["medical", "doctor", "dentist", "hospital"]):
+                        property_type = "medical"
+                
+                enrichment_result = await llm_enrichment_service.enrich(
+                    address=place.address,
+                    property_type=property_type,
+                    owner_name=place.parcel_owner or place.name,
+                    lbcs_code=None,
+                )
+                
+                # Process enrichment result
+                contact = None
+                enrichment_status = "not_found"
+                enrichment_steps = []
+                
+                if enrichment_result.detailed_steps:
+                    enrichment_steps = [s.description for s in enrichment_result.detailed_steps]
+                
+                if enrichment_result.success and enrichment_result.contact:
+                    enrichment_status = "success"
+                    with_contacts += 1
+                    contact = EnrichedContact(
+                        name=enrichment_result.contact.name,
+                        first_name=enrichment_result.contact.first_name,
+                        last_name=enrichment_result.contact.last_name,
+                        email=enrichment_result.contact.email,
+                        phone=enrichment_result.contact.phone,
+                        title=enrichment_result.contact.title,
+                        company=enrichment_result.management_company,
+                        website=enrichment_result.management_website,
+                        confidence=enrichment_result.confidence,
+                    )
+                    
+                    # Update property with contact info
+                    if prop:
+                        prop.contact_name = enrichment_result.contact.name
+                        prop.contact_first_name = enrichment_result.contact.first_name
+                        prop.contact_last_name = enrichment_result.contact.last_name
+                        prop.contact_email = enrichment_result.contact.email
+                        prop.contact_phone = enrichment_result.contact.phone
+                        prop.contact_title = enrichment_result.contact.title
+                        prop.contact_company = enrichment_result.management_company
+                        prop.contact_company_website = enrichment_result.management_website
+                        prop.enrichment_status = "success"
+                        prop.enrichment_source = "llm_enrichment"
+                        prop.enrichment_confidence = enrichment_result.confidence
+                        prop.enriched_at = datetime.utcnow()
+                        prop.enrichment_steps = json.dumps([
+                            step.to_dict() for step in enrichment_result.detailed_steps
+                        ]) if enrichment_result.detailed_steps else None
+                        db.commit()
+                    
+                    yield sse_message({
+                        "type": "contact_found",
+                        "message": f"Contact found: {contact.phone or contact.email or contact.company}",
+                        "place_id": place.place_id,
+                        "contact": contact.model_dump(),
+                    })
+                else:
+                    if prop:
+                        prop.enrichment_status = "not_found"
+                        prop.enrichment_steps = json.dumps([
+                            step.to_dict() for step in enrichment_result.detailed_steps
+                        ]) if enrichment_result.detailed_steps else None
+                        db.commit()
+                    
+                    yield sse_message({
+                        "type": "no_contact",
+                        "message": f"No contact found for: {place_name}",
+                        "place_id": place.place_id,
+                    })
+                
+                # Add to processed list
+                processed.append(ProcessedPlace(
+                    place_id=place.place_id,
+                    name=place.name,
+                    address=place.address,
+                    property_id=property_id,
+                    contact=contact,
+                    enrichment_status=enrichment_status,
+                    enrichment_steps=enrichment_steps,
+                ))
+                
+            except Exception as e:
+                logger.error(f"Error processing place {place.place_id}: {e}", exc_info=True)
+                processed.append(ProcessedPlace(
+                    place_id=place.place_id,
+                    name=place.name,
+                    address=place.address,
+                    enrichment_status="error",
+                    error=str(e)[:100],
+                ))
+                yield sse_message({
+                    "type": "error",
+                    "message": f"Error processing: {place_name}",
+                    "place_id": place.place_id,
+                    "error": str(e)[:100],
+                })
+            
+            await asyncio.sleep(0.1)  # Small delay between places
         
-        return ProcessParcelsResponse(
-            success=True,
-            message=f"Queued {len(request.parcels)} parcels for enrichment",
-            job_id="pending_implementation",
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Process parcels error: {e}", exc_info=True)
-        return ProcessParcelsResponse(
-            success=False,
-            message=str(e),
-        )
+        # Complete message
+        yield sse_message({
+            "type": "complete",
+            "message": f"Processed {len(processed)} places, {with_contacts} with contacts",
+            "total": len(processed),
+            "with_contacts": with_contacts,
+            "results": [p.model_dump() for p in processed],
+        })
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@router.post("/process/places", response_model=ProcessPlacesResponse)
+async def process_places(
+    request: ProcessPlacesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Process selected places for LLM enrichment (non-streaming version).
+    
+    For faster processing with progress updates, use /process/places/stream
+    """
+    if not request.places:
+        raise HTTPException(status_code=400, detail="No places provided")
+    
+    processed: List[ProcessedPlace] = []
+    with_contacts = 0
+    
+    for place in request.places:
+        try:
+            # Check if property already exists
+            existing = db.query(Property).filter(
+                Property.user_id == current_user.id,
+                Property.address == place.address,
+            ).first()
+            
+            prop = existing
+            if not existing:
+                # Create new property
+                new_prop = Property(
+                    id=uuid.uuid4(),
+                    user_id=current_user.id,
+                    centroid=from_shape(Point(place.lng, place.lat), srid=4326),
+                    address=place.address,
+                    regrid_id=place.parcel_id,
+                    regrid_apn=place.parcel_apn,
+                    regrid_owner=place.parcel_owner,
+                    regrid_area_acres=place.parcel_acreage,
+                    discovery_source="places_discovery",
+                    status="discovered",
+                )
+                db.add(new_prop)
+                db.commit()
+                db.refresh(new_prop)
+                prop = new_prop
+            
+            # Run enrichment
+            property_type = "commercial"
+            enrichment_result = await llm_enrichment_service.enrich(
+                address=place.address,
+                property_type=property_type,
+                owner_name=place.parcel_owner or place.name,
+            )
+            
+            contact = None
+            enrichment_status = "not_found"
+            
+            if enrichment_result.success and enrichment_result.contact:
+                enrichment_status = "success"
+                with_contacts += 1
+                contact = EnrichedContact(
+                    name=enrichment_result.contact.name,
+                    email=enrichment_result.contact.email,
+                    phone=enrichment_result.contact.phone,
+                    company=enrichment_result.management_company,
+                    confidence=enrichment_result.confidence,
+                )
+                
+                # Update property
+                prop.contact_name = enrichment_result.contact.name
+                prop.contact_email = enrichment_result.contact.email
+                prop.contact_phone = enrichment_result.contact.phone
+                prop.contact_company = enrichment_result.management_company
+                prop.enrichment_status = "success"
+                prop.enriched_at = datetime.utcnow()
+                db.commit()
+            
+            processed.append(ProcessedPlace(
+                place_id=place.place_id,
+                name=place.name,
+                address=place.address,
+                property_id=str(prop.id),
+                contact=contact,
+                enrichment_status=enrichment_status,
+            ))
+            
+        except Exception as e:
+            logger.error(f"Error processing place: {e}")
+            processed.append(ProcessedPlace(
+                place_id=place.place_id,
+                name=place.name,
+                address=place.address,
+                enrichment_status="error",
+                error=str(e)[:100],
+            ))
+    
+    return ProcessPlacesResponse(
+        success=True,
+        message=f"Processed {len(processed)} places",
+        processed=processed,
+        total=len(processed),
+        with_contacts=with_contacts,
+    )
 
 
 # ============ Viewport Parcels (for map tile layer) ============

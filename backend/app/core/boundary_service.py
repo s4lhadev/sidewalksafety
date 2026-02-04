@@ -25,7 +25,7 @@ LAYER_TO_DB_TYPE = {
     "states": "state",
     "counties": "county",
     "zips": "zip",
-    "urban_areas": "urban_area",
+    "urban_areas": "urban",
 }
 
 DB_TYPE_TO_LAYER = {v: k for k, v in LAYER_TO_DB_TYPE.items()}
@@ -79,7 +79,7 @@ class BoundaryService:
             ).fetchone()
             return result[0] if result else 0
     
-    def get_layer(self, layer_id: str, use_cache: bool = True) -> Dict[str, Any]:
+    def get_layer(self, layer_id: str, use_cache: bool = True, limit: int = 50000) -> Dict[str, Any]:
         """Get a boundary layer as GeoJSON FeatureCollection"""
         db_type = LAYER_TO_DB_TYPE.get(layer_id, layer_id)
         
@@ -91,9 +91,9 @@ class BoundaryService:
                         ST_AsGeoJSON(geometry)::json as geometry
                     FROM {self.schema}.boundaries 
                     WHERE boundary_type = :type
-                    LIMIT 10000
+                    LIMIT :limit
                 """),
-                {"type": db_type}
+                {"type": db_type, "limit": limit}
             ).fetchall()
             
             features = []

@@ -61,16 +61,8 @@ async def get_layer(
             layer_id, min_lng, min_lat, max_lng, max_lat, limit
         )
     
-    # Load all features for any layer
-    result = service.get_layer(layer_id)
-    
-    # Apply limit if needed
-    features = result.get("features", [])
-    if len(features) > limit:
-        result["features"] = features[:limit]
-        result["truncated"] = True
-        result["total_in_layer"] = len(features)
-    
+    # Load features with limit
+    result = service.get_layer(layer_id, limit=limit)
     return result
 
 

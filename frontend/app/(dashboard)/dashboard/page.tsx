@@ -10,7 +10,7 @@ import { DiscoveryPanel } from '@/components/features/discovery/DiscoveryPanel'
 import { useDiscoveryStream } from '@/lib/hooks/use-discovery-stream'
 import { SearchParcel, ViewportBounds } from '@/lib/api/search'
 import { BoundaryLayerResponse, boundariesApi } from '@/lib/api/boundaries'
-import { discoveryApi, DiscoveryParcel, PlaceWithParcel } from '@/lib/api/discovery'
+import { discoveryApi, DiscoveryParcel, PlaceWithParcel, ProcessingProgress, ProcessedPlace } from '@/lib/api/discovery'
 import { ArcGISParcel } from '@/lib/api/arcgis-parcels'
 
 type ClickMode = 'property' | 'discovery'
@@ -98,6 +98,12 @@ export default function DashboardPage() {
   } | null>(null)
   const [discoveredPlaces, setDiscoveredPlaces] = useState<PlaceWithParcel[]>([])
   const [selectedPlaces, setSelectedPlaces] = useState<PlaceWithParcel[]>([])
+  
+  // Processing state
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null)
+  const [processedResults, setProcessedResults] = useState<ProcessedPlace[]>([])
+  const processingController = useRef<AbortController | null>(null)
 
   // Clear clicked point when mode changes
   const handleMapClickMode = useCallback((mode: 'zip' | 'county' | 'pin' | 'urban' | null) => {
@@ -262,9 +268,46 @@ export default function DashboardPage() {
   
   // Handle process selected places
   const handleProcessPlaces = useCallback(async (places: PlaceWithParcel[]) => {
-    console.log('Processing places:', places)
-    // TODO: Implement LLM enrichment for selected places
-    alert(`Processing ${places.length} places for enrichment. This feature is coming soon!`)
+    if (places.length === 0) {
+      alert('Please select at least one place to process')
+      return
+    }
+    
+    console.log('Processing places:', places.length)
+    setIsProcessing(true)
+    setProcessingProgress(null)
+    setProcessedResults([])
+    
+    // Cancel any existing processing
+    if (processingController.current) {
+      processingController.current.abort()
+    }
+    
+    // Start streaming processing
+    processingController.current = discoveryApi.processPlacesStream(
+      places,
+      // On progress
+      (progress) => {
+        console.log('Processing progress:', progress)
+        setProcessingProgress(progress)
+      },
+      // On complete
+      (results) => {
+        console.log('Processing complete:', results)
+        setProcessedResults(results)
+        setIsProcessing(false)
+        
+        // Show summary
+        const withContacts = results.filter(r => r.contact).length
+        alert(`✅ Processed ${results.length} places!\n${withContacts} contacts found.`)
+      },
+      // On error
+      (error) => {
+        console.error('Processing error:', error)
+        setIsProcessing(false)
+        alert(`Processing failed: ${error}`)
+      }
+    )
   }, [])
   
   // Handle discovery clear/reset
@@ -679,6 +722,9 @@ export default function DashboardPage() {
           onDeselectAll={handleDeselectAllPlaces}
           // Processing
           onProcessSelected={handleProcessPlaces}
+          isProcessing={isProcessing}
+          processingProgress={processingProgress}
+          processedResults={processedResults}
           // Clear
           onClear={handleDiscoveryClear}
         />

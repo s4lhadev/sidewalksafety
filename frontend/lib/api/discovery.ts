@@ -94,6 +94,50 @@ export interface ProcessParcelsResponse {
   job_id?: string
 }
 
+export interface EnrichedContact {
+  name?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  email?: string | null
+  phone?: string | null
+  title?: string | null
+  company?: string | null
+  website?: string | null
+  confidence: number
+}
+
+export interface ProcessedPlace {
+  place_id: string
+  name: string
+  address: string
+  property_id?: string | null
+  contact?: EnrichedContact | null
+  enrichment_status: 'pending' | 'success' | 'not_found' | 'error'
+  enrichment_steps?: string[] | null
+  error?: string | null
+}
+
+export interface ProcessPlacesResponse {
+  success: boolean
+  message: string
+  processed: ProcessedPlace[]
+  total: number
+  with_contacts: number
+}
+
+export interface ProcessingProgress {
+  type: 'start' | 'processing' | 'property_found' | 'property_created' | 'enriching' | 'contact_found' | 'no_contact' | 'error' | 'complete'
+  message: string
+  current?: number
+  total?: number
+  place_id?: string
+  property_id?: string
+  contact?: EnrichedContact
+  error?: string
+  with_contacts?: number
+  results?: ProcessedPlace[]
+}
+
 // API Client
 export const discoveryApi = {
   /**
@@ -133,10 +177,97 @@ export const discoveryApi = {
 
   /**
    * Process selected parcels for LLM enrichment to find contact information.
+   * @deprecated Use processPlacesStream for the new discovery flow
    */
   processParcels: async (request: ProcessParcelsRequest): Promise<ProcessParcelsResponse> => {
     const { data } = await apiClient.post<ProcessParcelsResponse>('/discover/process', {
       parcels: request.parcels,
+    })
+    return data
+  },
+
+  /**
+   * Process selected places for LLM enrichment with SSE streaming.
+   * Returns an EventSource that streams progress updates.
+   */
+  processPlacesStream: (
+    places: PlaceWithParcel[],
+    onProgress: (progress: ProcessingProgress) => void,
+    onComplete: (results: ProcessedPlace[]) => void,
+    onError: (error: string) => void,
+  ): AbortController => {
+    const controller = new AbortController()
+    
+    const processStream = async () => {
+      try {
+        const response = await fetch(`${apiClient.defaults.baseURL}/discover/process/places/stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': apiClient.defaults.headers.common?.['Authorization'] as string || '',
+          },
+          body: JSON.stringify({ places }),
+          signal: controller.signal,
+        })
+        
+        if (!response.ok) {
+          const error = await response.json()
+          onError(error.detail || 'Processing failed')
+          return
+        }
+        
+        const reader = response.body?.getReader()
+        if (!reader) {
+          onError('No response stream')
+          return
+        }
+        
+        const decoder = new TextDecoder()
+        let buffer = ''
+        
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n\n')
+          buffer = lines.pop() || ''
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6)) as ProcessingProgress
+                onProgress(data)
+                
+                if (data.type === 'complete' && data.results) {
+                  onComplete(data.results)
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e)
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') {
+          onError((e as Error).message || 'Processing failed')
+        }
+      }
+    }
+    
+    processStream()
+    return controller
+  },
+
+  /**
+   * Process selected places for LLM enrichment (non-streaming).
+   * For progress updates, use processPlacesStream instead.
+   */
+  processPlaces: async (places: PlaceWithParcel[]): Promise<ProcessPlacesResponse> => {
+    const { data } = await apiClient.post<ProcessPlacesResponse>('/discover/process/places', {
+      places,
+    }, {
+      timeout: 300000, // 5 minutes for batch processing
     })
     return data
   },
