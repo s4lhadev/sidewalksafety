@@ -25,7 +25,7 @@ LAYER_TO_DB_TYPE = {
     "states": "state",
     "counties": "county",
     "zips": "zip",
-    "urban_areas": "urban",
+    "urban_areas": "urban_area",
 }
 
 DB_TYPE_TO_LAYER = {v: k for k, v in LAYER_TO_DB_TYPE.items()}
